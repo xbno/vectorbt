@@ -9,7 +9,12 @@ exclude_lines =
     if __name__ == .__main__.:
 ignore_errors = True
 omit =
-    */generic/plotting.py
+    */px_accessors.py
     */utils/colors.py
-    */utils/docs.py
-    */utils/widgets.py
+    */utils/figure.py
+    */utils/image.py
+    */utils/module.py
+    */utils/requests.py
+    */generic/plotting.py
+    */data/custom.py
+    */messaging/telegram.py

@@ -2,29 +2,31 @@
 [![Code Coverage](https://img.shields.io/codecov/c/github/polakowo/vectorbt?style=for-the-badge)](https://codecov.io/gh/polakowo/vectorbt)
 [![Website](https://img.shields.io/website?style=for-the-badge&url=https%3A%2F%2Fpolakowo.io%2Fvectorbt%2Fdocs%2Findex.html)](https://polakowo.io/vectorbt)
 [![PyPi](https://img.shields.io/pypi/v/vectorbt?color=blueviolet&style=for-the-badge)](https://pypi.org/project/vectorbt)
-[![Downloads](https://img.shields.io/pypi/dd/vectorbt?color=orange&style=for-the-badge)](https://pepy.tech/project/vectorbt)
+[![Downloads](https://img.shields.io/pypi/dm/vectorbt?color=orange&style=for-the-badge)](https://pepy.tech/project/vectorbt)
 [![License](https://img.shields.io/pypi/l/vectorbt?color=yellow&style=for-the-badge)](https://github.com/polakowo/vectorbt/blob/master/LICENSE)
 [![Gitter](https://img.shields.io/gitter/room/polakowo/vectorbt?color=9cf&style=for-the-badge)](https://gitter.im/vectorbt/community)
+[![Binder](https://img.shields.io/badge/launch-binder-d6604a?style=for-the-badge)](https://mybinder.org/v2/gh/polakowo/vectorbt/HEAD?urlpath=lab)
+[![Patreon](https://img.shields.io/badge/support-sponsor-ff69b4?style=for-the-badge)](https://www.patreon.com/vectorbt)
 
 # vectorbt
 
-![Logo](https://raw.githubusercontent.com/polakowo/vectorbt/master/static/favicon/favicon-128x128.png)
+![Logo](https://raw.githubusercontent.com/polakowo/vectorbt/master/static/favicon/favicon-100x100-dark.png)
 
 vectorbt is a backtesting library on steroids - it operates entirely on pandas and NumPy objects, and is 
-accelerated by [Numba](https://github.com/numba/numba) to analyze trading strategies at speed and scale :fire:
+accelerated by [Numba](https://github.com/numba/numba) to analyze time series at speed and scale :fire:
 
-In contrast to conventional libraries, vectorbt represents trading data as nd-arrays.
-This enables superfast computation using vectorized operations with NumPy and non-vectorized but compiled 
-operations with Numba. It also integrates [plotly.py](https://github.com/plotly/plotly.py) and 
+In contrast to conventional libraries, vectorbt represents any data as nd-arrays.
+This enables superfast computation using vectorized operations with NumPy and non-vectorized but dynamically 
+compiled operations with Numba. It also integrates [plotly.py](https://github.com/plotly/plotly.py) and 
 [ipywidgets](https://github.com/jupyter-widgets/ipywidgets) to display complex charts and dashboards akin 
 to Tableau right in the Jupyter notebook. Due to high performance, vectorbt is able to process large amounts of 
-data even without GPU and parallelization (both are work in progress), and enable the user to interact with 
-data-hungry widgets without significant delays.
+data even without GPU and parallelization, and enable the user to interact with data-hungry widgets 
+without significant delays.
 
 With vectorbt you can
-* Analyze time series and engineer features
+* Analyze time series and engineer new features
 * Supercharge pandas and your favorite tools to run much faster
-* Test many strategies, configurations, assets, and time ranges in one go
+* Test many trading strategies, configurations, assets, and periods in one go
 * Test machine learning models
 * Build interactive charts/dashboards without leaving Jupyter
 
@@ -34,8 +36,40 @@ With vectorbt you can
 pip install vectorbt
 ```
 
-See [Jupyter Notebook and JupyterLab Support](https://plotly.com/python/getting-started/#jupyter-notebook-support) 
-for Plotly figures.
+To also install optional dependencies:
+
+```bash
+pip install vectorbt[full]
+```
+
+See [License](https://github.com/polakowo/vectorbt#license) notes on optional dependencies.
+
+Troubleshooting:
+
+* [TA-Lib support](https://github.com/mrjbq7/ta-lib#dependencies)
+* [Jupyter Notebook and JupyterLab support](https://plotly.com/python/getting-started/#jupyter-notebook-support)
+
+### Docker
+
+You can pull the most recent Docker image if you [have Docker installed](https://docs.docker.com/install/).
+
+```bash
+docker run --rm -p 8888:8888 -v "$PWD":/home/jovyan/work polakowo/vectorbt
+```
+
+This command pulls the latest `polakowo/vectorbt` image from Docker Hub. It then starts a container running 
+a Jupyter Notebook server and exposes the server on host port 8888. Visiting `http://127.0.0.1:8888/?token=<token>` 
+in a browser loads JupyterLab, where token is the secret token printed in the console. Docker destroys 
+the container after notebook server exit, but any files written to the working directory in the container 
+remain intact in the working directory on the host. See [Jupyter Docker Stacks - Quick Start](https://github.com/jupyter/docker-stacks#quick-start).
+
+There are two types of images: 
+
+* [polakowo/vectorbt](https://hub.docker.com/r/polakowo/vectorbt): vanilla version (default)
+* [polakowo/vectorbt-full](https://hub.docker.com/r/polakowo/vectorbt-full): full version (with optional dependencies)
+
+Each Docker image is based on [jupyter/scipy-notebook](https://hub.docker.com/r/jupyter/scipy-notebook) 
+and comes with Jupyter environment, vectorbt, and other scientific packages installed.
 
 ## Examples
 
@@ -47,7 +81,7 @@ Here is how much profit we would have made if we invested $100 into Bitcoin in 2
 ```python
 import vectorbt as vbt
 
-price = vbt.utils.data.download('BTC-USD', period='max')['Close']
+price = vbt.YFData.download('BTC-USD').get('Close')
 
 portfolio = vbt.Portfolio.from_holding(price, init_cash=100)
 portfolio.total_profit()
@@ -73,32 +107,30 @@ portfolio.total_profit()
 12642.617149066731
 ```
 
-Quickly assessing the performance of 1000 random strategies on BTC and ETH:
+Quickly assessing the performance of 1000 random signal strategies on BTC and ETH:
 
 ```python
 import numpy as np
 
 symbols = ["BTC-USD", "ETH-USD"]
-price_by_symbol = vbt.utils.data.download(symbols, period='max', cols='Close')
-price = vbt.utils.data.concat_symbols(price_by_symbol, treat_missing='drop')
+price = vbt.YFData.download(symbols, missing_index='drop').get('Close')
 
 n = np.random.randint(10, 101, size=1000).tolist()
-portfolio = vbt.Portfolio.from_random(price, n=n, init_cash=100, seed=42)
+portfolio = vbt.Portfolio.from_random_signals(price, n=n, init_cash=100, seed=42)
 
 mean_expectancy = portfolio.trades.expectancy().groupby(['rand_n', 'symbol']).mean()
 fig = mean_expectancy.unstack().vbt.scatterplot(xaxis_title='rand_n', yaxis_title='mean_expectancy')
 fig.show()
 ```
 
-![rand_scatter.png](https://raw.githubusercontent.com/polakowo/vectorbt/master/static/rand_scatter.png)
+![rand_scatter.svg](https://raw.githubusercontent.com/polakowo/vectorbt/master/static/rand_scatter.svg)
 
 For fans of hyperparameter optimization, here is a snippet for testing 10000 window combinations of a 
-dual SMA crossover strategy on BTC, USD and XRP:
+dual SMA crossover strategy on BTC, USD and LTC:
 
 ```python
 symbols = ["BTC-USD", "ETH-USD", "LTC-USD"]
-price_by_symbol = vbt.utils.data.download(symbols, period='max', cols='Close')
-price = vbt.utils.data.concat_symbols(price_by_symbol, treat_missing='drop')
+price = vbt.YFData.download(symbols, missing_index='drop').get('Close')
 
 windows = np.arange(2, 101)
 fast_ma, slow_ma = vbt.MA.run_combs(price, window=windows, r=2, short_names=['fast', 'slow'])
@@ -123,31 +155,31 @@ portfolio[(10, 20, 'ETH-USD')].stats()
 ```
 
 ```plaintext
-Start                     2016-12-31 00:00:00
-End                       2020-12-03 00:00:00
-Duration                   1434 days 00:00:00
-Init. Cash                                100
-Total Profit                          51417.2
-Total Return [%]                      51417.2
-Benchmark Return [%]                  7594.86
-Position Coverage [%]                 56.0669
-Max. Drawdown [%]                     70.7334
-Avg. Drawdown [%]                     9.70672
-Max. Drawdown Duration      760 days 00:00:00
-Avg. Drawdown Duration       29 days 12:00:00
-Num. Trades                                33
-Win Rate [%]                          57.5758
-Best Trade [%]                        477.295
-Worst Trade [%]                      -27.7724
-Avg. Trade [%]                        36.1783
-Max. Trade Duration          79 days 00:00:00
-Avg. Trade Duration          22 days 16:00:00
-Expectancy                            929.696
-SQN                                    1.7616
-Gross Exposure                       0.560669
-Sharpe Ratio                          2.30658
-Sortino Ratio                          4.1649
-Calmar Ratio                          5.51501
+Start                      2015-08-07 00:00:00+00:00
+End                        2021-05-02 00:00:00+00:00
+Duration                          2092 days 00:00:00
+Init. Cash                                       100
+Total Profit                                  846151
+Total Return [%]                              846151
+Benchmark Return [%]                          106176
+Position Coverage [%]                        56.1185
+Max. Drawdown [%]                             70.735
+Avg. Drawdown [%]                            12.2078
+Max. Drawdown Duration             760 days 00:00:00
+Avg. Drawdown Duration    29 days 14:19:42.089552239
+Num. Trades                                       50
+Win Rate [%]                                      54
+Best Trade [%]                                1075.8
+Worst Trade [%]                             -29.5934
+Avg. Trade [%]                               47.8175
+Max. Trade Duration                 80 days 00:00:00
+Avg. Trade Duration                 22 days 20:38:24
+Expectancy                                   12322.9
+SQN                                          1.43759
+Gross Exposure                              0.561185
+Sharpe Ratio                                 2.17109
+Sortino Ratio                                3.81812
+Calmar Ratio                                 5.43505
 Name: (10, 20, ETH-USD), dtype: object
 ```
 
@@ -155,48 +187,36 @@ Name: (10, 20, ETH-USD), dtype: object
 portfolio[(10, 20, 'ETH-USD')].plot().show()
 ```
 
-![dmac_portfolio.png](https://raw.githubusercontent.com/polakowo/vectorbt/master/static/dmac_portfolio.png)
+![dmac_portfolio.svg](https://raw.githubusercontent.com/polakowo/vectorbt/master/static/dmac_portfolio.svg)
 
 It's not all about backtesting - vectorbt can be used to facilitate financial data analysis and visualization.
-Let's generate a GIF for comparing %B and bandwidth of Bollinger Bands for different symbols:
+Let's generate a GIF that animates the %B and bandwidth of Bollinger Bands for different symbols:
 
 ```python
-import vectorbt as vbt
-import imageio
-from tqdm import tqdm
-
 symbols = ["BTC-USD", "ETH-USD", "ADA-USD"]
-gif_delta, gif_step, gif_fps = 90, 3, 3
-gif_fname = 'bbands.gif'
-
-price_by_symbol = vbt.utils.data.download(symbols, period='6mo', cols='Close')
-price = vbt.utils.data.concat_symbols(price_by_symbol, treat_missing='drop')
-
+price = vbt.YFData.download(symbols, period='6mo', missing_index='drop').get('Close')
 bbands = vbt.BBANDS.run(price)
 
-def plot(bbands):
+def plot(index, bbands):
+    bbands = bbands.loc[index]
     fig = vbt.make_subplots(
-            rows=5, cols=1, shared_xaxes=True, 
-            row_heights=[*[0.5 / 3] * len(symbols), 0.25, 0.25], vertical_spacing=0.05,
-            subplot_titles=(*symbols, '%B', 'Bandwidth'))
-    fig.update_layout(template=vbt.settings.dark_template, showlegend=False, width=750, height=650)
+        rows=5, cols=1, shared_xaxes=True, 
+        row_heights=[*[0.5 / 3] * len(symbols), 0.25, 0.25], vertical_spacing=0.05,
+        subplot_titles=(*symbols, '%B', 'Bandwidth'))
+    fig.update_layout(template='vbt_dark', showlegend=False, width=750, height=650)
     for i, symbol in enumerate(symbols):
         bbands.close[symbol].vbt.lineplot(add_trace_kwargs=dict(row=i + 1, col=1), fig=fig)
-    bbands.percent_b.iloc[:, ::-1].vbt.heatmap(
+    bbands.percent_b.vbt.ts_heatmap(
         trace_kwargs=dict(zmin=0, zmid=0.5, zmax=1, colorscale='Spectral', colorbar=dict(
             y=(fig.layout.yaxis4.domain[0] + fig.layout.yaxis4.domain[1]) / 2, len=0.2
-        )), add_trace_kwargs=dict(row=4, col=1), horizontal=True, fig=fig)
-    bbands.bandwidth.iloc[:, ::-1].vbt.heatmap(
+        )), add_trace_kwargs=dict(row=4, col=1), fig=fig)
+    bbands.bandwidth.vbt.ts_heatmap(
         trace_kwargs=dict(colorbar=dict(
             y=(fig.layout.yaxis5.domain[0] + fig.layout.yaxis5.domain[1]) / 2, len=0.2
-        )), add_trace_kwargs=dict(row=5, col=1), horizontal=True, fig=fig)
+        )), add_trace_kwargs=dict(row=5, col=1), fig=fig)
     return fig
 
-with imageio.get_writer(gif_fname, fps=gif_fps) as writer:
-    for i in tqdm(range(0, len(bbands.wrapper.index) - gif_delta, gif_step)):
-        fig = plot(bbands.iloc[i:i + gif_delta])
-        fig_np = imageio.imread(fig.to_image(format="png"))
-        writer.append_data(fig_np)
+vbt.save_animation('bbands.gif', bbands.wrapper.index, plot, bbands, delta=90, step=3, fps=3)
 ```
 
 ```plaintext
@@ -207,18 +227,10 @@ with imageio.get_writer(gif_fname, fps=gif_fps) as writer:
 
 ## Motivation
 
-While there are [many other great backtesting packages for Python](https://github.com/mementum/backtrader#alternatives), 
-vectorbt is more of a data science tool: it excels at processing performance and offers interactive tools to explore 
-complex phenomena in trading. With it you can traverse a huge number of strategy configurations, time periods and 
-instruments in little time, to explore where your strategy performs best and to uncover hidden patterns in data.
-
-Take a simple [Dual Moving Average Crossover](https://en.wikipedia.org/wiki/Moving_average_crossover) strategy 
-as example. By calculating the performance of each reasonable window combination and plotting the whole thing 
-as a heatmap (as we do above), we can analyze how performance depends upon window size. If we additionally 
-compute the same heatmap over multiple time periods, we may observe how performance varies with downtrends 
-and uptrends. Finally, by running the same pipeline over other strategies such as holding and trading randomly, 
-we can compare them and decide whether our strategy is worth executing. With vectorbt, this analysis can 
-be done in minutes and save time and cost of getting the same insights elsewhere.
+While there are [many great backtesting packages for Python](https://github.com/mementum/backtrader#alternatives), 
+vectorbt combines an extremely fast backtester and a data science tool: it excels at processing performance and offers 
+interactive tools to explore complex phenomena in trading. With it, you can traverse a huge number of strategy configurations, 
+time periods, and instruments in little time, to explore where your strategy performs best and to uncover hidden patterns in data.
 
 ## How it works?
 
@@ -269,7 +281,7 @@ method is flexible towards inputs and can work on both Series and DataFrames.
 3.32 ms ± 19.7 µs per loop (mean ± std. dev. of 7 runs, 100 loops each)
 ```
     
-- Helper functions for combining, transforming, and indexing NumPy and pandas objects
+- Functions for combining, transforming, and indexing NumPy and pandas objects
     - NumPy-like broadcasting for pandas, among other features
     
 ```python-repl
@@ -299,16 +311,29 @@ method is flexible towards inputs and can work on both Series and DataFrames.
 86.2 ms ± 7.97 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
 ```
 
+- Splitting functions for time series cross-validation
+    - Supports [scikit-learn](https://github.com/scikit-learn/scikit-learn) splitters
+
+```python-repl
+>>> pd.Series([1, 2, 3, 4, 5]).vbt.expanding_split()[0]
+split_idx    0    1    2    3  4
+0          1.0  1.0  1.0  1.0  1
+1          NaN  2.0  2.0  2.0  2
+2          NaN  NaN  3.0  3.0  3
+3          NaN  NaN  NaN  4.0  4
+4          NaN  NaN  NaN  NaN  5
+```
+
 - Drawdown analysis
 
 ```python-repl
 >>> pd.Series([2, 1, 3, 2]).vbt.drawdowns.plot().show()
 ```
 
-![drawdowns.png](https://raw.githubusercontent.com/polakowo/vectorbt/master/static/drawdowns.png)
+![drawdowns.svg](https://raw.githubusercontent.com/polakowo/vectorbt/master/static/drawdowns.svg)
 
 - Functions for working with signals
-    - Entry, exit and random signal generation
+    - Entry, exit, and random signal generators
     - Ranking and distance functions
     
 ```python-repl
@@ -321,7 +346,7 @@ dtype: bool
 ```
 
 - Signal factory for building iterative signal generators
-    - Also includes a range of basic generators such for random signals
+    - Includes basic generators such for random signal generation
 
 ```python-repl
 >>> rand = vbt.RAND.run(n=[0, 1, 2], input_shape=(6,), seed=42)
@@ -344,7 +369,8 @@ rand_n      0      1      2
 ```
     
 - Functions for working with returns
-    - Compiled versions of metrics found in [empyrical](https://github.com/quantopian/empyrical)
+    - Numba-compiled versions of metrics found in [empyrical](https://github.com/quantopian/empyrical)
+    - Rolling versions of most metrics
 
 ```python-repl
 >>> pd.Series([0.01, -0.01, 0.01]).vbt.returns(freq='1D').sharpe_ratio()
@@ -355,7 +381,8 @@ rand_n      0      1      2
     - Accepts signals, orders, and custom order function
     - Supports long and short positions
     - Supports individual and multi-asset mixed portfolios
-    - Provides metrics and tools for analyzing returns, orders, trades and positions
+    - Offers metrics and tools for analyzing returns, orders, trades and positions
+    - Allows saving and loading from disk using [dill](https://github.com/uqfoundation/dill)
     
 ```python-repl
 >>> price = [1., 2., 3., 2., 1.]
@@ -365,50 +392,83 @@ rand_n      0      1      2
 >>> portfolio.trades.plot().show()
 ```
 
-![trades.png](https://raw.githubusercontent.com/polakowo/vectorbt/master/static/trades.png)
-    
-- A range of basic technical indicators with full Numba support
-    - Moving average, Bollinger Bands, RSI, Stochastic, MACD, and more
-    - Each offers methods for generating signals and plotting
-    - Each allows arbitrary parameter combinations, from arrays to Cartesian products
-    
-```python-repl
->>> vbt.MA.run([1, 2, 3], window=[2, 3], ewm=[False, True]).ma
-ma_window     2         3
-ma_ewm    False      True 
-0           NaN       NaN
-1           1.5       NaN
-2           2.5  2.428571
-``` 
+![trades.svg](https://raw.githubusercontent.com/polakowo/vectorbt/master/static/trades.svg)
 
 - Indicator factory for building complex technical indicators with ease
-    - Supports [TA-Lib](https://github.com/mrjbq7/ta-lib) indicators out of the box
-    
+    - Includes technical indicators with full Numba support
+        - Moving average, Bollinger Bands, RSI, Stochastic, MACD, and more
+    - Each indicator has methods for generating signals and plotting
+    - Each indicator takes arbitrary parameter combinations, from arrays to Cartesian products
+    - Supports [ta](https://github.com/bukosabino/ta), [pandas-ta](https://github.com/twopirllc/pandas-ta), and [TA-Lib](https://github.com/mrjbq7/ta-lib) indicators out of the box
+    - Supports parallelization with [Ray](https://github.com/ray-project/ray)
+
 ```python-repl
->>> SMA = vbt.IndicatorFactory.from_talib('SMA')
->>> SMA.run([1., 2., 3.], timeperiod=[2, 3]).real
+>>> price = pd.Series([1, 2, 3, 4, 5], dtype=float)
+>>> vbt.MA.run(price, [2, 3]).ma  # vectorbt
+ma_window    2    3
+0          NaN  NaN
+1          1.5  NaN
+2          2.5  2.0
+3          3.5  3.0
+4          4.5  4.0
+
+>>> vbt.ta('SMAIndicator').run(price, [2, 3]).sma_indicator  # ta
+smaindicator_window    2    3
+0                    NaN  NaN
+1                    1.5  NaN
+2                    2.5  2.0
+3                    3.5  3.0
+4                    4.5  4.0
+
+>>> vbt.pandas_ta('SMA').run(price, [2, 3]).sma  # pandas-ta
+sma_length    2    3
+0           NaN  NaN
+1           1.5  NaN
+2           2.5  2.0
+3           3.5  3.0
+4           4.5  4.0
+
+>>> vbt.talib('SMA').run(price, [2, 3]).real  # TA-Lib
 sma_timeperiod    2    3
 0               NaN  NaN
 1               1.5  NaN
 2               2.5  2.0
+3               3.5  3.0
+4               4.5  4.0
 ``` 
-    
-- Interactive Plotly-based widgets to visualize backtest results
-    - Full integration with ipywidgets for displaying interactive dashboards in Jupyter
+
+- Label generation for machine learning
+    - Labeling based on local extrema, breakouts, and more
+
+```python-repl
+>>> price = np.cumprod(np.random.uniform(-0.1, 0.1, size=100) + 1)
+>>> vbt.LEXLB.run(price, 0.2, 0.2).plot().show()
+``` 
+
+![local_extrema.svg](https://raw.githubusercontent.com/polakowo/vectorbt/master/static/local_extrema.svg)
+
+- Classes for downloading and (periodically) updating data
+    - Includes APIs such as [ccxt](https://github.com/ccxt/ccxt), [yfinance](https://github.com/ranaroussi/yfinance) and [python-binance](https://github.com/sammchardy/python-binance)
+- Telegram bot based on [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)
+- Interactive Plotly-based widgets for visual data analysis
 
 ## Resources
 
-Head over to the [documentation](https://polakowo.io/vectorbt) to get started.
+Head over to the [documentation](https://polakowo.io/vectorbt/docs/index.html) to get started.
 
 ### Notebooks
 
-- [Assessing performance of DMAC on Bitcoin](https://nbviewer.jupyter.org/github/polakowo/vectorbt/blob/master/examples/BitcoinDMAC.ipynb)
-- [Comparing effectiveness of stop signals](https://nbviewer.jupyter.org/github/polakowo/vectorbt/blob/master/examples/StopSignals.ipynb)
+- [Performance analysis of Moving Average Crossover](https://nbviewer.jupyter.org/github/polakowo/vectorbt/blob/master/examples/BitcoinDMAC.ipynb)
+- [Performance analysis of stop signals](https://nbviewer.jupyter.org/github/polakowo/vectorbt/blob/master/examples/StopSignals.ipynb)
 - [Backtesting per trading session](https://nbviewer.jupyter.org/github/polakowo/vectorbt/blob/master/examples/TradingSessions.ipynb)
 - [Portfolio optimization](https://nbviewer.jupyter.org/github/polakowo/vectorbt/blob/master/examples/PortfolioOptimization.ipynb)
 - [Plotting MACD parameters as 3D volume](https://nbviewer.jupyter.org/github/polakowo/vectorbt/blob/master/examples/MACDVolume.ipynb)
+- [Walk-forward optimization](https://nbviewer.jupyter.org/github/polakowo/vectorbt/blob/master/examples/WalkForwardOptimization.ipynb)
+- [Running Telegram signal bot](https://nbviewer.jupyter.org/github/polakowo/vectorbt/blob/master/examples/TelegramSignals.ipynb)
+- [Porting RSI strategy from backtrader](https://nbviewer.jupyter.org/github/polakowo/vectorbt/blob/master/examples/PortingBTStrategy.ipynb)
+- [Pairs trading (vs backtrader)](https://nbviewer.jupyter.org/github/polakowo/vectorbt/blob/master/examples/PairsTrading.ipynb)
 
-Note: you need to run the notebook to play with widgets.
+Note: you must run the notebook to play with the widgets.
 
 ### Dashboards
 
@@ -439,7 +499,12 @@ pytest
 
 Please make sure to update tests as appropriate.
 
+## License
+
+This work is licensed under Apache 2.0, but installing optional dependencies may be subject to a stronger license.
+
 ## Disclaimer
 
 This software is for educational purposes only. Do not risk money which you are afraid to lose. 
 USE THE SOFTWARE AT YOUR OWN RISK. THE AUTHORS AND ALL AFFILIATES ASSUME NO RESPONSIBILITY FOR YOUR TRADING RESULTS.
+

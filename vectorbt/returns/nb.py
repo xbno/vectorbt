@@ -1,4 +1,19 @@
-"""Numba-compiled 1-dim and 2-dim functions.
+"""Numba-compiled functions.
+
+Provides an arsenal of Numba-compiled functions that are used by accessors and for measuring
+portfolio performance. These only accept NumPy arrays and other Numba-compatible types.
+
+```python-repl
+>>> import numpy as np
+>>> import vectorbt as vbt
+
+>>> price = np.array([1.1, 1.2, 1.3, 1.2, 1.1])
+>>> returns = vbt.generic.nb.pct_change_1d_nb(price)
+
+>>> # vectorbt.returns.nb.cum_returns_1d_nb
+>>> vbt.returns.nb.cum_returns_1d_nb(returns, 0)
+array([0., 0.09090909, 0.18181818, 0.09090909, 0.])
+```
 
 !!! note
     vectorbt treats matrices as first-class citizens and expects input arrays to be
@@ -10,46 +25,44 @@
 import numpy as np
 from numba import njit
 
-from vectorbt.base.reshape_fns import flex_select_auto_nb
+from vectorbt import _typing as tp
 from vectorbt.generic import nb as generic_nb
+
 
 # ############# Financial risk and performance metrics ############# #
 
 
 @njit(cache=True)
-def total_return_apply_nb(idxs, col, returns):
+def total_return_apply_nb(idxs: tp.Array1d, col: int, returns: tp.Array1d) -> float:
     """Calculate total return from returns."""
     return generic_nb.product_1d_nb(returns + 1) - 1
 
-# Functions from empyrical but Numba-compiled
-
 
 @njit(cache=True)
-def cum_returns_1d_nb(returns, start_value=0.):
+def cum_returns_1d_nb(returns: tp.Array1d, start_value: float) -> tp.Array1d:
     """See `empyrical.cum_returns`."""
-    nanmask = np.isnan(returns)
-    if nanmask.any():
-        returns = returns.copy()
-        returns[nanmask] = 0.
-    out = generic_nb.cumprod_1d_nb(returns + 1.)
+    out = np.empty_like(returns, dtype=np.float_)
+    cumprod = 1
+    for i in range(returns.shape[0]):
+        if not np.isnan(returns[i]):
+            cumprod *= returns[i] + 1
+        out[i] = cumprod
     if start_value == 0.:
         return out - 1.
     return out * start_value
 
 
 @njit(cache=True)
-def cum_returns_nb(returns, start_value):
+def cum_returns_nb(returns: tp.Array2d, start_value: float) -> tp.Array2d:
     """2-dim version of `cum_returns_1d_nb`."""
-    start_value_arr = np.asarray(start_value)
     out = np.empty_like(returns, dtype=np.float_)
     for col in range(returns.shape[1]):
-        _start_value = flex_select_auto_nb(0, col, start_value_arr, True)
-        out[:, col] = cum_returns_1d_nb(returns[:, col], start_value=_start_value)
+        out[:, col] = cum_returns_1d_nb(returns[:, col], start_value)
     return out
 
 
 @njit(cache=True)
-def cum_returns_final_1d_nb(returns, start_value=0.):
+def cum_returns_final_1d_nb(returns: tp.Array1d, start_value: float = 0.) -> float:
     """See `empyrical.cum_returns_final`."""
     out = generic_nb.product_1d_nb(returns + 1.)
     if start_value == 0.:
@@ -58,27 +71,35 @@ def cum_returns_final_1d_nb(returns, start_value=0.):
 
 
 @njit(cache=True)
-def cum_returns_final_nb(returns, start_value):
-    """2-dim version of `cum_returns_final_1d_nb`.
-
-    `start_value_arr` should be an array of shape `returns.shape[1]`."""
-    start_value_arr = np.asarray(start_value)
+def cum_returns_final_nb(returns: tp.Array2d, start_value: float = 0.) -> tp.Array1d:
+    """2-dim version of `cum_returns_final_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
-        _start_value = flex_select_auto_nb(0, col, start_value_arr, True)
-        out[col] = cum_returns_final_1d_nb(returns[:, col], start_value=_start_value)
+        out[col] = cum_returns_final_1d_nb(returns[:, col], start_value)
     return out
 
 
+@njit
+def rolling_cum_returns_final_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                                 start_value: float = 0.) -> tp.Array2d:
+    """Rolling version of `cum_returns_final_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _start_value):
+        return cum_returns_final_1d_nb(_returns, _start_value)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, start_value)
+
+
 @njit(cache=True)
-def annualized_return_1d_nb(returns, ann_factor):
+def annualized_return_1d_nb(returns: tp.Array1d, ann_factor: float) -> float:
     """See `empyrical.annual_return`."""
-    end_value = cum_returns_final_1d_nb(returns, start_value=1.)
+    end_value = cum_returns_final_1d_nb(returns, 1.)
     return end_value ** (ann_factor / returns.shape[0]) - 1
 
 
 @njit(cache=True)
-def annualized_return_nb(returns, ann_factor):
+def annualized_return_nb(returns: tp.Array2d, ann_factor: float) -> tp.Array1d:
     """2-dim version of `annualized_return_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
@@ -86,30 +107,52 @@ def annualized_return_nb(returns, ann_factor):
     return out
 
 
+@njit
+def rolling_annualized_return_nb(returns: tp.Array2d, window: int,
+                                 minp: tp.Optional[int], ann_factor: float) -> tp.Array2d:
+    """Rolling version of `annualized_return_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _ann_factor):
+        return annualized_return_1d_nb(_returns, _ann_factor)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, ann_factor)
+
+
 @njit(cache=True)
-def annualized_volatility_1d_nb(returns, ann_factor, levy_alpha=2.0):
+def annualized_volatility_1d_nb(returns: tp.Array1d, ann_factor: float,
+                                levy_alpha: float = 2.0, ddof: int = 1) -> float:
     """See `empyrical.annual_volatility`."""
     if returns.shape[0] < 2:
         return np.nan
 
-    return generic_nb.nanstd_1d_nb(returns, ddof=1) * ann_factor ** (1.0 / levy_alpha)
+    return generic_nb.nanstd_1d_nb(returns, ddof) * ann_factor ** (1.0 / levy_alpha)
 
 
 @njit(cache=True)
-def annualized_volatility_nb(returns, ann_factor, levy_alpha):
-    """2-dim version of `annualized_volatility_1d_nb`.
-
-    `levy_alpha_arr` should be an array of shape `returns.shape[1]`."""
-    levy_alpha_arr = np.asarray(levy_alpha)
+def annualized_volatility_nb(returns: tp.Array2d, ann_factor: float,
+                             levy_alpha: float = 2.0, ddof: int = 1) -> tp.Array1d:
+    """2-dim version of `annualized_volatility_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
-        _levy_alpha = flex_select_auto_nb(0, col, levy_alpha_arr, True)
-        out[col] = annualized_volatility_1d_nb(returns[:, col], ann_factor, levy_alpha=_levy_alpha)
+        out[col] = annualized_volatility_1d_nb(returns[:, col], ann_factor, levy_alpha, ddof)
     return out
 
 
+@njit
+def rolling_annualized_volatility_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                                     ann_factor: float, levy_alpha: float = 2.0, ddof: int = 1) -> tp.Array2d:
+    """Rolling version of `annualized_volatility_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _ann_factor, _levy_alpha, _ddof):
+        return annualized_volatility_1d_nb(_returns, _ann_factor, _levy_alpha, _ddof)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, ann_factor, levy_alpha, ddof)
+
+
 @njit(cache=True)
-def drawdown_1d_nb(returns):
+def drawdown_1d_nb(returns: tp.Array1d) -> tp.Array1d:
     """Drawdown of cumulative returns."""
     cum_returns = cum_returns_1d_nb(returns, start_value=100.)
     max_returns = generic_nb.expanding_max_1d_nb(cum_returns, minp=1)
@@ -117,7 +160,7 @@ def drawdown_1d_nb(returns):
 
 
 @njit(cache=True)
-def drawdown_nb(returns):
+def drawdown_nb(returns: tp.Array2d) -> tp.Array2d:
     """2-dim version of `drawdown_1d_nb`."""
     out = np.empty_like(returns, dtype=np.float_)
     for col in range(returns.shape[1]):
@@ -126,13 +169,13 @@ def drawdown_nb(returns):
 
 
 @njit(cache=True)
-def max_drawdown_1d_nb(returns):
+def max_drawdown_1d_nb(returns: tp.Array1d) -> float:
     """See `empyrical.max_drawdown`."""
     return np.min(drawdown_1d_nb(returns))
 
 
 @njit(cache=True)
-def max_drawdown_nb(returns):
+def max_drawdown_nb(returns: tp.Array2d) -> tp.Array1d:
     """2-dim version of `max_drawdown_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
@@ -140,18 +183,31 @@ def max_drawdown_nb(returns):
     return out
 
 
+@njit
+def rolling_max_drawdown_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int]) -> tp.Array2d:
+    """Rolling version of `max_drawdown_nb`."""
+
+    def _apply_func_nb(i, col, _returns):
+        return max_drawdown_1d_nb(_returns)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb)
+
+
 @njit(cache=True)
-def calmar_ratio_1d_nb(returns, ann_factor):
+def calmar_ratio_1d_nb(returns: tp.Array1d, ann_factor: float) -> float:
     """See `empyrical.calmar_ratio`."""
     max_drawdown = max_drawdown_1d_nb(returns)
     if max_drawdown == 0.:
         return np.nan
     annualized_return = annualized_return_1d_nb(returns, ann_factor)
+    if max_drawdown == 0.:
+        return np.inf
     return annualized_return / np.abs(max_drawdown)
 
 
 @njit(cache=True)
-def calmar_ratio_nb(returns, ann_factor):
+def calmar_ratio_nb(returns: tp.Array2d, ann_factor: float) -> tp.Array1d:
     """2-dim version of `calmar_ratio_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
@@ -159,8 +215,21 @@ def calmar_ratio_nb(returns, ann_factor):
     return out
 
 
+@njit
+def rolling_calmar_ratio_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                            ann_factor: float) -> tp.Array2d:
+    """Rolling version of `calmar_ratio_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _ann_factor):
+        return calmar_ratio_1d_nb(_returns, _ann_factor)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, ann_factor)
+
+
 @njit(cache=True)
-def omega_ratio_1d_nb(returns, ann_factor, risk_free=0., required_return=0.):
+def omega_ratio_1d_nb(returns: tp.Array1d, ann_factor: float, risk_free: float = 0.,
+                      required_return: float = 0.) -> float:
     """See `empyrical.omega_ratio`."""
     if ann_factor == 1:
         return_threshold = required_return
@@ -177,50 +246,66 @@ def omega_ratio_1d_nb(returns, ann_factor, risk_free=0., required_return=0.):
 
 
 @njit(cache=True)
-def omega_ratio_nb(returns, ann_factor, risk_free, required_return):
-    """2-dim version of `omega_ratio_1d_nb`.
-
-    `risk_free_arr` and `required_return_arr` should be arrays of shape `returns.shape[1]`."""
-    risk_free_arr = np.asarray(risk_free)
-    required_return_arr = np.asarray(required_return)
+def omega_ratio_nb(returns: tp.Array2d, ann_factor: float, risk_free: float = 0.,
+                   required_return: float = 0.) -> tp.Array1d:
+    """2-dim version of `omega_ratio_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
-        _risk_free = flex_select_auto_nb(0, col, risk_free_arr, True)
-        _required_return = flex_select_auto_nb(0, col, required_return_arr, True)
         out[col] = omega_ratio_1d_nb(
-            returns[:, col], ann_factor, risk_free=_risk_free, required_return=_required_return)
+            returns[:, col], ann_factor, risk_free, required_return)
     return out
 
 
+@njit
+def rolling_omega_ratio_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int], ann_factor: float,
+                           risk_free: float = 0., required_return: float = 0.) -> tp.Array2d:
+    """Rolling version of `omega_ratio_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _ann_factor, _risk_free, _required_return):
+        return omega_ratio_1d_nb(_returns, _ann_factor, _risk_free, _required_return)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, ann_factor, risk_free, required_return)
+
+
 @njit(cache=True)
-def sharpe_ratio_1d_nb(returns, ann_factor, risk_free=0.):
+def sharpe_ratio_1d_nb(returns: tp.Array1d, ann_factor: float, risk_free: float = 0., ddof: int = 1) -> float:
     """See `empyrical.sharpe_ratio`."""
     if returns.shape[0] < 2:
         return np.nan
 
     returns_risk_adj = returns - risk_free
     mean = np.nanmean(returns_risk_adj)
-    std = generic_nb.nanstd_1d_nb(returns_risk_adj, ddof=1)
+    std = generic_nb.nanstd_1d_nb(returns_risk_adj, ddof)
     if std == 0.:
         return np.inf
     return mean / std * np.sqrt(ann_factor)
 
 
 @njit(cache=True)
-def sharpe_ratio_nb(returns, ann_factor, risk_free):
-    """2-dim version of `sharpe_ratio_1d_nb`.
-
-    `risk_free_arr` should be an array of shape `returns.shape[1]`."""
-    risk_free_arr = np.asarray(risk_free)
+def sharpe_ratio_nb(returns: tp.Array2d, ann_factor: float,
+                    risk_free: float = 0., ddof: int = 1) -> tp.Array1d:
+    """2-dim version of `sharpe_ratio_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
-        _risk_free = flex_select_auto_nb(0, col, risk_free_arr, True)
-        out[col] = sharpe_ratio_1d_nb(returns[:, col], ann_factor, risk_free=_risk_free)
+        out[col] = sharpe_ratio_1d_nb(returns[:, col], ann_factor, risk_free, ddof)
     return out
 
 
+@njit
+def rolling_sharpe_ratio_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                            ann_factor: float, risk_free: float = 0., ddof: int = 1) -> tp.Array2d:
+    """Rolling version of `sharpe_ratio_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _ann_factor, _risk_free, _ddof):
+        return sharpe_ratio_1d_nb(_returns, _ann_factor, _risk_free, _ddof)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, ann_factor, risk_free, ddof)
+
+
 @njit(cache=True)
-def downside_risk_1d_nb(returns, ann_factor, required_return=0.):
+def downside_risk_1d_nb(returns: tp.Array1d, ann_factor: float, required_return: float = 0.) -> float:
     """See `empyrical.downside_risk`."""
     adj_returns = returns - required_return
     adj_returns[adj_returns > 0] = 0
@@ -228,66 +313,98 @@ def downside_risk_1d_nb(returns, ann_factor, required_return=0.):
 
 
 @njit(cache=True)
-def downside_risk_nb(returns, ann_factor, required_return):
-    """2-dim version of `downside_risk_1d_nb`.
-
-    `required_return_arr` should be an array of shape `returns.shape[1]`."""
-    required_return_arr = np.asarray(required_return)
+def downside_risk_nb(returns: tp.Array2d, ann_factor: float, required_return: float = 0.) -> tp.Array1d:
+    """2-dim version of `downside_risk_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
-        _required_return = flex_select_auto_nb(0, col, required_return_arr, True)
-        out[col] = downside_risk_1d_nb(returns[:, col], ann_factor, required_return=_required_return)
+        out[col] = downside_risk_1d_nb(returns[:, col], ann_factor, required_return)
     return out
 
 
+@njit
+def rolling_downside_risk_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                             ann_factor: float, required_return: float = 0.) -> tp.Array2d:
+    """Rolling version of `downside_risk_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _ann_factor, _required_return):
+        return downside_risk_1d_nb(_returns, _ann_factor, _required_return)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, ann_factor, required_return)
+
+
 @njit(cache=True)
-def sortino_ratio_1d_nb(returns, ann_factor, required_return=0.):
+def sortino_ratio_1d_nb(returns: tp.Array1d, ann_factor: float, required_return: float = 0.) -> float:
     """See `empyrical.sortino_ratio`."""
     if returns.shape[0] < 2:
         return np.nan
 
     adj_returns = returns - required_return
     average_annualized_return = np.nanmean(adj_returns) * ann_factor
-    downside_risk = downside_risk_1d_nb(returns, ann_factor, required_return=required_return)
+    downside_risk = downside_risk_1d_nb(returns, ann_factor, required_return)
     if downside_risk == 0.:
         return np.inf
     return average_annualized_return / downside_risk
 
 
 @njit(cache=True)
-def sortino_ratio_nb(returns, ann_factor, required_return):
-    """2-dim version of `sortino_ratio_1d_nb`.
-
-    `required_return_arr` should be an array of shape `returns.shape[1]`."""
-    required_return_arr = np.asarray(required_return)
+def sortino_ratio_nb(returns: tp.Array2d, ann_factor: float, required_return: float = 0.) -> tp.Array1d:
+    """2-dim version of `sortino_ratio_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
-        _required_return = flex_select_auto_nb(0, col, required_return_arr, True)
-        out[col] = sortino_ratio_1d_nb(returns[:, col], ann_factor, required_return=_required_return)
+        out[col] = sortino_ratio_1d_nb(returns[:, col], ann_factor, required_return)
     return out
 
 
+@njit
+def rolling_sortino_ratio_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                             ann_factor: float, required_return: float = 0.) -> tp.Array2d:
+    """Rolling version of `sortino_ratio_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _ann_factor, _required_return):
+        return sortino_ratio_1d_nb(_returns, _ann_factor, _required_return)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, ann_factor, required_return)
+
+
 @njit(cache=True)
-def information_ratio_1d_nb(returns, benchmark_rets):
+def information_ratio_1d_nb(returns: tp.Array1d, benchmark_rets: tp.Array1d, ddof: int = 1) -> float:
     """See `empyrical.excess_sharpe`."""
     if returns.shape[0] < 2:
         return np.nan
 
     active_return = returns - benchmark_rets
-    return np.nanmean(active_return) / generic_nb.nanstd_1d_nb(active_return, ddof=1)
+    mean = np.nanmean(active_return)
+    std = generic_nb.nanstd_1d_nb(active_return, ddof)
+    if std == 0.:
+        return np.inf
+    return mean / std
 
 
 @njit(cache=True)
-def information_ratio_nb(returns, benchmark_rets):
+def information_ratio_nb(returns: tp.Array2d, benchmark_rets: tp.Array2d, ddof: int = 1) -> tp.Array1d:
     """2-dim version of `information_ratio_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
-        out[col] = information_ratio_1d_nb(returns[:, col], benchmark_rets[:, col])
+        out[col] = information_ratio_1d_nb(returns[:, col], benchmark_rets[:, col], ddof)
     return out
 
 
+@njit
+def rolling_information_ratio_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                                 benchmark_rets: tp.Array2d, ddof: int = 1) -> tp.Array2d:
+    """Rolling version of `information_ratio_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _benchmark_rets, _ddof):
+        return information_ratio_1d_nb(_returns, _benchmark_rets[i + 1 - len(_returns):i + 1, col], _ddof)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, benchmark_rets, ddof)
+
+
 @njit(cache=True)
-def beta_1d_nb(returns, benchmark_rets):
+def beta_1d_nb(returns: tp.Array1d, benchmark_rets: tp.Array1d) -> float:
     """See `empyrical.beta`."""
     if benchmark_rets.shape[0] < 2:
         return np.nan
@@ -309,7 +426,7 @@ def beta_1d_nb(returns, benchmark_rets):
 
 
 @njit(cache=True)
-def beta_nb(returns, benchmark_rets):
+def beta_nb(returns: tp.Array2d, benchmark_rets: tp.Array2d) -> tp.Array1d:
     """2-dim version of `beta_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
@@ -317,8 +434,21 @@ def beta_nb(returns, benchmark_rets):
     return out
 
 
+@njit
+def rolling_beta_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                    benchmark_rets: tp.Array2d) -> tp.Array2d:
+    """Rolling version of `beta_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _benchmark_rets):
+        return beta_1d_nb(_returns, _benchmark_rets[i + 1 - len(_returns):i + 1, col])
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, benchmark_rets)
+
+
 @njit(cache=True)
-def alpha_1d_nb(returns, benchmark_rets, ann_factor, risk_free=0.):
+def alpha_1d_nb(returns: tp.Array1d, benchmark_rets: tp.Array1d, ann_factor: float,
+                risk_free: float = 0.) -> float:
     """See `empyrical.alpha`."""
     if returns.shape[0] < 2:
         return np.nan
@@ -331,20 +461,29 @@ def alpha_1d_nb(returns, benchmark_rets, ann_factor, risk_free=0.):
 
 
 @njit(cache=True)
-def alpha_nb(returns, benchmark_rets, ann_factor, risk_free):
-    """2-dim version of `alpha_1d_nb`.
-
-    `risk_free_arr` should be an array of shape `returns.shape[1]`."""
-    risk_free_arr = np.asarray(risk_free)
+def alpha_nb(returns: tp.Array2d, benchmark_rets: tp.Array2d, ann_factor: float,
+             risk_free: float = 0.) -> tp.Array1d:
+    """2-dim version of `alpha_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
-        _risk_free = flex_select_auto_nb(0, col, risk_free_arr, True)
-        out[col] = alpha_1d_nb(returns[:, col], benchmark_rets[:, col], ann_factor, risk_free=_risk_free)
+        out[col] = alpha_1d_nb(returns[:, col], benchmark_rets[:, col], ann_factor, risk_free)
     return out
 
 
+@njit
+def rolling_alpha_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int], benchmark_rets: tp.Array2d,
+                     ann_factor: float, risk_free: float = 0.) -> tp.Array2d:
+    """Rolling version of `alpha_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _benchmark_rets, _ann_factor, _risk_free):
+        return alpha_1d_nb(_returns, _benchmark_rets[i + 1 - len(_returns):i + 1, col], _ann_factor, _risk_free)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, benchmark_rets, ann_factor, risk_free)
+
+
 @njit(cache=True)
-def tail_ratio_1d_nb(returns):
+def tail_ratio_1d_nb(returns: tp.Array1d) -> float:
     """See `empyrical.tail_ratio`."""
     returns = returns[~np.isnan(returns)]
     if len(returns) < 1:
@@ -357,7 +496,7 @@ def tail_ratio_1d_nb(returns):
 
 
 @njit(cache=True)
-def tail_ratio_nb(returns):
+def tail_ratio_nb(returns: tp.Array2d) -> tp.Array1d:
     """2-dim version of `tail_ratio_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
@@ -365,8 +504,19 @@ def tail_ratio_nb(returns):
     return out
 
 
+@njit
+def rolling_tail_ratio_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int]) -> tp.Array2d:
+    """Rolling version of `tail_ratio_nb`."""
+
+    def _apply_func_nb(i, col, _returns):
+        return tail_ratio_1d_nb(_returns)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb)
+
+
 @njit(cache=True)
-def value_at_risk_1d_nb(returns, cutoff=0.05):
+def value_at_risk_1d_nb(returns: tp.Array1d, cutoff: float = 0.05) -> float:
     """See `empyrical.value_at_risk`."""
     returns = returns[~np.isnan(returns)]
     if len(returns) < 1:
@@ -375,40 +525,56 @@ def value_at_risk_1d_nb(returns, cutoff=0.05):
 
 
 @njit(cache=True)
-def value_at_risk_nb(returns, cutoff):
-    """2-dim version of `value_at_risk_1d_nb`.
-
-    `cutoff_arr` should be an array of shape `returns.shape[1]`."""
-    cutoff_arr = np.asarray(cutoff)
+def value_at_risk_nb(returns: tp.Array2d, cutoff: float = 0.05) -> tp.Array1d:
+    """2-dim version of `value_at_risk_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
-        _cutoff = flex_select_auto_nb(0, col, cutoff_arr, True)
-        out[col] = value_at_risk_1d_nb(returns[:, col], cutoff=_cutoff)
+        out[col] = value_at_risk_1d_nb(returns[:, col], cutoff)
     return out
 
 
+@njit
+def rolling_value_at_risk_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                             cutoff: float = 0.05) -> tp.Array2d:
+    """Rolling version of `value_at_risk_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _cutoff):
+        return value_at_risk_1d_nb(_returns, _cutoff)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, cutoff)
+
+
 @njit(cache=True)
-def conditional_value_at_risk_1d_nb(returns, cutoff=0.05):
-    """See `empyrical.conditional_value_at_risk`."""
+def cond_value_at_risk_1d_nb(returns: tp.Array1d, cutoff: float = 0.05) -> float:
+    """See `empyrical.cond_value_at_risk`."""
     cutoff_index = int((len(returns) - 1) * cutoff)
     return np.mean(np.partition(returns, cutoff_index)[:cutoff_index + 1])
 
 
 @njit(cache=True)
-def conditional_value_at_risk_nb(returns, cutoff):
-    """2-dim version of `conditional_value_at_risk_1d_nb`.
-
-    `cutoff_arr` should be an array of shape `returns.shape[1]`."""
-    cutoff_arr = np.asarray(cutoff)
+def cond_value_at_risk_nb(returns: tp.Array2d, cutoff: float = 0.05) -> tp.Array1d:
+    """2-dim version of `cond_value_at_risk_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
-        _cutoff = flex_select_auto_nb(0, col, cutoff_arr, True)
-        out[col] = conditional_value_at_risk_1d_nb(returns[:, col], cutoff=_cutoff)
+        out[col] = cond_value_at_risk_1d_nb(returns[:, col], cutoff)
     return out
 
 
+@njit
+def rolling_cond_value_at_risk_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                                  cutoff: float = 0.05) -> tp.Array2d:
+    """Rolling version of `cond_value_at_risk_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _cutoff):
+        return cond_value_at_risk_1d_nb(_returns, _cutoff)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, cutoff)
+
+
 @njit(cache=True)
-def capture_1d_nb(returns, benchmark_rets, ann_factor):
+def capture_1d_nb(returns: tp.Array1d, benchmark_rets: tp.Array1d, ann_factor: float) -> float:
     """See `empyrical.capture`."""
     annualized_return1 = annualized_return_1d_nb(returns, ann_factor)
     annualized_return2 = annualized_return_1d_nb(benchmark_rets, ann_factor)
@@ -418,7 +584,7 @@ def capture_1d_nb(returns, benchmark_rets, ann_factor):
 
 
 @njit(cache=True)
-def capture_nb(returns, benchmark_rets, ann_factor):
+def capture_nb(returns: tp.Array2d, benchmark_rets: tp.Array2d, ann_factor: float) -> tp.Array1d:
     """2-dim version of `capture_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
@@ -426,8 +592,20 @@ def capture_nb(returns, benchmark_rets, ann_factor):
     return out
 
 
+@njit
+def rolling_capture_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                       benchmark_rets: tp.Array2d, ann_factor: float) -> tp.Array2d:
+    """Rolling version of `capture_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _benchmark_rets, _ann_factor):
+        return capture_1d_nb(_returns, _benchmark_rets[i + 1 - len(_returns):i + 1, col], _ann_factor)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, benchmark_rets, ann_factor)
+
+
 @njit(cache=True)
-def up_capture_1d_nb(returns, benchmark_rets, ann_factor):
+def up_capture_1d_nb(returns: tp.Array1d, benchmark_rets: tp.Array1d, ann_factor: float) -> float:
     """See `empyrical.up_capture`."""
     returns = returns[benchmark_rets > 0]
     benchmark_rets = benchmark_rets[benchmark_rets > 0]
@@ -441,7 +619,7 @@ def up_capture_1d_nb(returns, benchmark_rets, ann_factor):
 
 
 @njit(cache=True)
-def up_capture_nb(returns, benchmark_rets, ann_factor):
+def up_capture_nb(returns: tp.Array2d, benchmark_rets: tp.Array2d, ann_factor: float) -> tp.Array1d:
     """2-dim version of `up_capture_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
@@ -449,8 +627,20 @@ def up_capture_nb(returns, benchmark_rets, ann_factor):
     return out
 
 
+@njit
+def rolling_up_capture_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                          benchmark_rets: tp.Array2d, ann_factor: float) -> tp.Array2d:
+    """Rolling version of `up_capture_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _benchmark_rets, _ann_factor):
+        return up_capture_1d_nb(_returns, _benchmark_rets[i + 1 - len(_returns):i + 1, col], _ann_factor)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, benchmark_rets, ann_factor)
+
+
 @njit(cache=True)
-def down_capture_1d_nb(returns, benchmark_rets, ann_factor):
+def down_capture_1d_nb(returns: tp.Array1d, benchmark_rets: tp.Array1d, ann_factor: float) -> float:
     """See `empyrical.down_capture`."""
     returns = returns[benchmark_rets < 0]
     benchmark_rets = benchmark_rets[benchmark_rets < 0]
@@ -464,9 +654,21 @@ def down_capture_1d_nb(returns, benchmark_rets, ann_factor):
 
 
 @njit(cache=True)
-def down_capture_nb(returns, benchmark_rets, ann_factor):
+def down_capture_nb(returns: tp.Array2d, benchmark_rets: tp.Array2d, ann_factor: float) -> tp.Array1d:
     """2-dim version of `down_capture_1d_nb`."""
     out = np.empty(returns.shape[1], dtype=np.float_)
     for col in range(returns.shape[1]):
         out[col] = down_capture_1d_nb(returns[:, col], benchmark_rets[:, col], ann_factor)
     return out
+
+
+@njit
+def rolling_down_capture_nb(returns: tp.Array2d, window: int, minp: tp.Optional[int],
+                            benchmark_rets: tp.Array2d, ann_factor: float) -> tp.Array2d:
+    """Rolling version of `down_capture_nb`."""
+
+    def _apply_func_nb(i, col, _returns, _benchmark_rets, _ann_factor):
+        return down_capture_1d_nb(_returns, _benchmark_rets[i + 1 - len(_returns):i + 1, col], _ann_factor)
+
+    return generic_nb.rolling_apply_nb(
+        returns, window, minp, _apply_func_nb, benchmark_rets, ann_factor)

@@ -3,6 +3,9 @@
 %>
 
 <%def name="mobile()" filter="minify_css">
+:root {
+    --highlight-color: #e82;
+}
 .flex {
     display: flex !important;
 }
@@ -71,6 +74,16 @@ h3 {
 h4 {
     margin: 0;
     font-size: 105%;
+}
+
+h1:target,
+h2:target,
+h3:target,
+h4:target,
+h5:target,
+h6:target {
+    background: var(--highlight-color);
+    padding: .2em 0;
 }
 
 a {
@@ -220,6 +233,10 @@ dd p {
     background: #e0e0e0;
 }
 
+dt:target .name {
+    background: var(--highlight-color);
+}
+
 .name>span:first-child {
     white-space: nowrap;
 }
@@ -248,6 +265,7 @@ dd p {
 }
 
 .desc h3 {
+    font-weight: 400;
     font-size: 1em;
 }
 
@@ -309,6 +327,10 @@ dd p {
 
 img {
     max-width: 100%;
+}
+
+td {
+    padding: 0 .5em;
 }
 
 .admonition {
@@ -565,7 +587,7 @@ a.badge-dark.focus {
 }
 
 #sidebar {
-    background: #3B4556;
+    background: #393f4a;
 }
 
 .toc ul ul, #index ul {
@@ -698,9 +720,9 @@ pre .btnIcon:hover {
 	img {
 		page-break-inside: avoid;
 	}
-	img {
-		max-width: 100% !important;
-	}
+    img {
+        max-width: 100% !important;
+    }
 	@page {
 		margin: 0.5cm;
 	}

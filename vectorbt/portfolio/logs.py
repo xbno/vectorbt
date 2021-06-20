@@ -1,7 +1,12 @@
-"""Base class for working with log records."""
+"""Base class for working with log records.
+
+Class `Logs` wraps log records to analyze logs. Logs are mainly populated when
+simulating a portfolio and can be accessed as `vectorbt.portfolio.base.Portfolio.logs`."""
 
 import pandas as pd
 
+from vectorbt import _typing as tp
+from vectorbt.base.array_wrapper import ArrayWrapper
 from vectorbt.records.base import Records
 from vectorbt.portfolio.enums import (
     log_dt,
@@ -20,7 +25,11 @@ class Logs(Records):
         Some features require the log records to be sorted prior to the processing.
         Use the `vectorbt.records.base.Records.sort` method."""
 
-    def __init__(self, wrapper, records_arr, idx_field='idx', **kwargs):
+    def __init__(self,
+                 wrapper: ArrayWrapper,
+                 records_arr: tp.RecordArray,
+                 idx_field: str = 'idx',
+                 **kwargs) -> None:
         Records.__init__(
             self,
             wrapper,
@@ -33,7 +42,7 @@ class Logs(Records):
             raise TypeError("Records array must match debug_info_dt")
 
     @property  # no need for cached
-    def records_readable(self):
+    def records_readable(self) -> tp.Frame:
         """Records in readable format."""
         records_df = self.records
         out = pd.DataFrame(columns=pd.MultiIndex.from_tuples([
@@ -42,31 +51,38 @@ class Logs(Records):
             ('Context', 'Column'),
             ('Context', 'Group'),
             ('Context', 'Cash'),
-            ('Context', 'Shares'),
-            ('Context', 'Val. Price'),
+            ('Context', 'Position'),
+            ('Context', 'Debt'),
+            ('Context', 'Free Cash'),
+            ('Context', 'Val Price'),
             ('Context', 'Value'),
             ('Order', 'Size'),
+            ('Order', 'Price'),
             ('Order', 'Size Type'),
             ('Order', 'Direction'),
-            ('Order', 'Price'),
             ('Order', 'Fees'),
             ('Order', 'Fixed Fees'),
             ('Order', 'Slippage'),
-            ('Order', 'Min. Size'),
-            ('Order', 'Max. Size'),
-            ('Order', 'Rejection Prob.'),
-            ('Order', 'Allow Partial?'),
-            ('Order', 'Raise Rejection?'),
-            ('Order', 'Log?'),
-            ('Result', 'New Cash'),
-            ('Result', 'New Shares'),
-            ('Result', 'Size'),
-            ('Result', 'Price'),
-            ('Result', 'Fees'),
-            ('Result', 'Side'),
-            ('Result', 'Status'),
-            ('Result', 'Status Info'),
-            ('Result', 'Order Id')
+            ('Order', 'Min Size'),
+            ('Order', 'Max Size'),
+            ('Order', 'Rejection Prob'),
+            ('Order', 'Lock Cash'),
+            ('Order', 'Allow Partial'),
+            ('Order', 'Raise Rejection'),
+            ('Order', 'Log'),
+            ('New Context', 'Cash'),
+            ('New Context', 'Position'),
+            ('New Context', 'Debt'),
+            ('New Context', 'Free Cash'),
+            ('New Context', 'Val Price'),
+            ('New Context', 'Value'),
+            ('Order Result', 'Size'),
+            ('Order Result', 'Price'),
+            ('Order Result', 'Fees'),
+            ('Order Result', 'Side'),
+            ('Order Result', 'Status'),
+            ('Order Result', 'Status Info'),
+            ('Order Result', 'Order Id')
         ]))
 
         def map_enum(sr, enum):
@@ -76,30 +92,37 @@ class Logs(Records):
         out.iloc[:, 1] = records_df['idx'].map(lambda x: self.wrapper.index[x])
         out.iloc[:, 2] = records_df['col'].map(lambda x: self.wrapper.columns[x])
         out.iloc[:, 3] = records_df['group']
-        out.iloc[:, 4] = records_df['cash_now']
-        out.iloc[:, 5] = records_df['shares_now']
-        out.iloc[:, 6] = records_df['val_price_now']
-        out.iloc[:, 7] = records_df['value_now']
-        out.iloc[:, 8] = records_df['size']
-        out.iloc[:, 9] = map_enum(records_df['size_type'], SizeType)
-        out.iloc[:, 10] = map_enum(records_df['direction'], Direction)
+        out.iloc[:, 4] = records_df['cash']
+        out.iloc[:, 5] = records_df['position']
+        out.iloc[:, 6] = records_df['debt']
+        out.iloc[:, 7] = records_df['free_cash']
+        out.iloc[:, 8] = records_df['val_price']
+        out.iloc[:, 9] = records_df['value']
+        out.iloc[:, 10] = records_df['size']
         out.iloc[:, 11] = records_df['price']
-        out.iloc[:, 12] = records_df['fees']
-        out.iloc[:, 13] = records_df['fixed_fees']
-        out.iloc[:, 14] = records_df['slippage']
-        out.iloc[:, 15] = records_df['min_size']
-        out.iloc[:, 16] = records_df['max_size']
-        out.iloc[:, 17] = records_df['reject_prob']
-        out.iloc[:, 18] = records_df['allow_partial']
-        out.iloc[:, 19] = records_df['raise_reject']
-        out.iloc[:, 20] = records_df['log']
-        out.iloc[:, 21] = records_df['new_cash']
-        out.iloc[:, 22] = records_df['new_shares']
-        out.iloc[:, 23] = records_df['res_size']
-        out.iloc[:, 24] = records_df['res_price']
-        out.iloc[:, 25] = records_df['res_fees']
-        out.iloc[:, 26] = map_enum(records_df['res_side'], OrderSide)
-        out.iloc[:, 27] = map_enum(records_df['res_status'], OrderStatus)
-        out.iloc[:, 28] = map_enum(records_df['res_status_info'], StatusInfo)
-        out.iloc[:, 29] = records_df['order_id']
+        out.iloc[:, 12] = map_enum(records_df['size_type'], SizeType)
+        out.iloc[:, 13] = map_enum(records_df['direction'], Direction)
+        out.iloc[:, 14] = records_df['fees']
+        out.iloc[:, 15] = records_df['fixed_fees']
+        out.iloc[:, 16] = records_df['slippage']
+        out.iloc[:, 17] = records_df['min_size']
+        out.iloc[:, 18] = records_df['max_size']
+        out.iloc[:, 19] = records_df['reject_prob']
+        out.iloc[:, 20] = records_df['lock_cash']
+        out.iloc[:, 21] = records_df['allow_partial']
+        out.iloc[:, 22] = records_df['raise_reject']
+        out.iloc[:, 23] = records_df['log']
+        out.iloc[:, 24] = records_df['new_cash']
+        out.iloc[:, 25] = records_df['new_position']
+        out.iloc[:, 26] = records_df['new_debt']
+        out.iloc[:, 27] = records_df['new_free_cash']
+        out.iloc[:, 28] = records_df['new_val_price']
+        out.iloc[:, 29] = records_df['new_value']
+        out.iloc[:, 30] = records_df['res_size']
+        out.iloc[:, 31] = records_df['res_price']
+        out.iloc[:, 32] = records_df['res_fees']
+        out.iloc[:, 33] = map_enum(records_df['res_side'], OrderSide)
+        out.iloc[:, 34] = map_enum(records_df['res_status'], OrderStatus)
+        out.iloc[:, 35] = map_enum(records_df['res_status_info'], StatusInfo)
+        out.iloc[:, 36] = records_df['order_id']
         return out

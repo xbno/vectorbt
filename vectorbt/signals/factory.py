@@ -1,14 +1,21 @@
-"""A factory for building new signal generators with ease."""
+"""A factory for building new signal generators with ease.
+
+The signal factory class `SignalFactory` extends `vectorbt.indicators.factory.IndicatorFactory`
+to offer a convenient way to create signal generators of any complexity. By providing it with information
+such as entry and exit functions and the names of inputs, parameters, and outputs, it will create a
+stand-alone class capable of generating signals for an arbitrary combination of inputs and parameters.
+"""
 
 import numpy as np
 from numba import njit
-from numba.typed import List
 import inspect
 
+from vectorbt import _typing as tp
 from vectorbt.utils import checks
 from vectorbt.utils.config import merge_dicts
+from vectorbt.utils.params import to_typed_list
 from vectorbt.base import combine_fns
-from vectorbt.indicators.factory import IndicatorFactory, to_typed_list
+from vectorbt.indicators.factory import IndicatorFactory, IndicatorBase, CacheOutputT
 from vectorbt.signals.nb import generate_ex_nb, generate_enex_nb, first_choice_nb
 
 
@@ -34,14 +41,15 @@ class SignalFactory(IndicatorFactory):
 
     def __init__(self,
                  *args,
-                 class_name='CustomSignals',
-                 input_names=None,
-                 attr_settings=None,
-                 exit_only=False,
-                 iteratively=False,
-                 **kwargs):
+                 input_names: tp.Optional[tp.Sequence[str]] = None,
+                 attr_settings: tp.KwargsLike = None,
+                 exit_only: bool = False,
+                 iteratively: bool = False,
+                 **kwargs) -> None:
         if input_names is None:
             input_names = []
+        else:
+            input_names = list(input_names)
         if attr_settings is None:
             attr_settings = {}
         if iteratively:
@@ -55,14 +63,14 @@ class SignalFactory(IndicatorFactory):
             output_names = ['exits']
             if iteratively:
                 output_names = ['new_entries'] + output_names
-                attr_settings['new_entries'] = dict(dtype=np.bool)
+                attr_settings['new_entries'] = dict(dtype=np.bool_)
         else:
             output_names = ['entries', 'exits']
-        attr_settings['entries'] = dict(dtype=np.bool)
-        attr_settings['exits'] = dict(dtype=np.bool)
+        attr_settings['entries'] = dict(dtype=np.bool_)
+        attr_settings['exits'] = dict(dtype=np.bool_)
         IndicatorFactory.__init__(
-            self, *args,
-            class_name=class_name,
+            self,
+            *args,
             input_names=input_names,
             output_names=output_names,
             attr_settings=attr_settings,
@@ -72,14 +80,14 @@ class SignalFactory(IndicatorFactory):
         self.iteratively = iteratively
 
         def plot(_self,
-                 entry_y=None,
-                 exit_y=None,
-                 entry_types=None,
-                 exit_types=None,
-                 entry_trace_kwargs=None,
-                 exit_trace_kwargs=None,
-                 fig=None,
-                 **kwargs):  # pragma: no cover
+                 entry_y: tp.Optional[tp.ArrayLike] = None,
+                 exit_y: tp.Optional[tp.ArrayLike] = None,
+                 entry_types: tp.Optional[tp.ArrayLikeSequence] = None,
+                 exit_types: tp.Optional[tp.ArrayLikeSequence] = None,
+                 entry_trace_kwargs: tp.KwargsLike = None,
+                 exit_trace_kwargs: tp.KwargsLike = None,
+                 fig: tp.Optional[tp.BaseFigure] = None,
+                 **kwargs) -> tp.BaseFigure:  # pragma: no cover
             if _self.wrapper.ndim > 1:
                 raise TypeError("Select a column first. Use indexing.")
 
@@ -88,11 +96,13 @@ class SignalFactory(IndicatorFactory):
             if exit_trace_kwargs is None:
                 exit_trace_kwargs = {}
             if entry_types is not None:
+                entry_types = np.asarray(entry_types)
                 entry_trace_kwargs = merge_dicts(dict(
                     customdata=entry_types,
                     hovertemplate="(%{x}, %{y})<br>Type: %{customdata}"
                 ), entry_trace_kwargs)
             if exit_types is not None:
+                exit_types = np.asarray(exit_types)
                 exit_trace_kwargs = merge_dicts(dict(
                     customdata=exit_types,
                     hovertemplate="(%{x}, %{y})<br>Type: %{customdata}"
@@ -120,23 +130,26 @@ class SignalFactory(IndicatorFactory):
             `vectorbt.signals.accessors.SignalsSRAccessor.plot_as_entry_markers` for `{0}.{1}`.
             exit_trace_kwargs (dict): Keyword arguments passed to \
             `vectorbt.signals.accessors.SignalsSRAccessor.plot_as_exit_markers` for `{0}.exits`.
-            fig (plotly.graph_objects.Figure): Figure to add traces to.
+            fig (Figure or FigureWidget): Figure to add traces to.
             **kwargs: Keyword arguments passed to `vectorbt.signals.accessors.SignalsSRAccessor.plot_as_markers`.
         """.format(
-            class_name, 'new_entries' if exit_only and iteratively else 'entries'
+            self.class_name, 'new_entries' if exit_only and iteratively else 'entries'
         )
 
-        setattr(self.CustomIndicator, 'plot', plot)
+        setattr(self.Indicator, 'plot', plot)
 
     def from_choice_func(
             self,
-            entry_choice_func=None,
-            exit_choice_func=None,
-            cache_func=None,
-            entry_settings=None,
-            exit_settings=None,
-            cache_settings=None,
-            **kwargs):
+            entry_choice_func: tp.Optional[tp.SignalChoiceFunc] = None,
+            exit_choice_func: tp.Optional[tp.SignalChoiceFunc] = None,
+            generate_ex_func: tp.Callable = generate_ex_nb,
+            generate_enex_func: tp.Callable = generate_enex_nb,
+            cache_func: tp.Callable = None,
+            entry_settings: tp.KwargsLike = None,
+            exit_settings: tp.KwargsLike = None,
+            cache_settings: tp.KwargsLike = None,
+            numba_loop: bool = False,
+            **kwargs) -> tp.Type[IndicatorBase]:
         """Build signal generator class around entry and exit choice functions.
 
         A choice function is simply a function that returns indices of signals.
@@ -145,20 +158,29 @@ class SignalFactory(IndicatorFactory):
         broadcast parameter arrays, and other arguments, and returns an array of indices
         corresponding to chosen signals. See `vectorbt.signals.nb.generate_nb`.
 
-        If `exit_only` is True, calls `vectorbt.signals.nb.generate_ex_nb`.
-        If `exit_only` is False or `iteratively` is True, calls `vectorbt.signals.nb.generate_enex_nb`.
+        If `exit_only` is True, calls `generate_ex_func`.
+        If `exit_only` is False or `iteratively` is True, calls `generate_enex_func`.
 
         Args:
             entry_choice_func (callable): `choice_func_nb` that returns indices of entries.
 
                 If `exit_only` is True, automatically set to `vectorbt.signals.nb.first_choice_nb`.
             exit_choice_func (callable): `choice_func_nb` that returns indices of exits.
+            generate_ex_func (callable): Exit generation function.
+
+                Defaults to `vectorbt.signals.nb.generate_ex_nb`.
+            generate_enex_func (callable): Entry and exit generation function.
+
+                Defaults to `vectorbt.signals.nb.generate_enex_nb`.
             cache_func (callable): A caching function to preprocess data beforehand.
 
                 All returned objects will be passed as last arguments to choice functions.
             entry_settings (dict): Settings dict for `entry_choice_func`.
             exit_settings (dict): Settings dict for `exit_choice_func`.
             cache_settings (dict): Settings dict for `cache_func`.
+            numba_loop (bool): Whether to loop using Numba.
+
+                Set to True when iterating large number of times over small input.
             **kwargs: Keyword arguments passed to `IndicatorFactory.from_custom_func`.
 
         !!! note
@@ -166,6 +188,9 @@ class SignalFactory(IndicatorFactory):
 
             Which inputs, parameters and arguments to pass to each function should be
             explicitly indicated in the function's settings dict. By default, nothing is passed.
+
+            Passing keyword arguments directly to the choice functions is not supported.
+            Use `pass_kwargs` in a settings dict to pass keyword arguments as positional.
 
         Settings dict of each function can have the following keys:
 
@@ -190,7 +215,7 @@ class SignalFactory(IndicatorFactory):
                 Built-in keys include:
 
                 * `input_shape`: Input shape if no input time series passed.
-                    Default is provided by the pipeline if `forward_input_shape` is True.
+                    Default is provided by the pipeline if `pass_input_shape` is True.
                 * `wait`: Number of ticks to wait before placing signals.
                     Default is 1.
                 * `first`: Whether to stop as soon as the first exit signal is found.
@@ -200,7 +225,7 @@ class SignalFactory(IndicatorFactory):
 
                     You can also pass `temp_idx_arr1`, `temp_idx_arr2`, etc. to generate multiple.
                 * `flex_2d`: See `vectorbt.base.reshape_fns.flex_choose_i_and_col_nb`.
-                    Default is provided by the pipeline if `forward_flex_2d` is True.
+                    Default is provided by the pipeline if `pass_flex_2d` is True.
             pass_cache (bool): Whether to pass cache from `cache_func` to the choice function.
 
                 Defaults to False. Cache is passed unpacked.
@@ -281,15 +306,15 @@ class SignalFactory(IndicatorFactory):
         4         False  False  False
         ```
 
-        To combine multiple iterative signals, you would need to create a choice function
-        that does that. Here is an example of combining two random generators using "OR" rule:
+        To combine multiple iterative signals, you would need to create a custom choice function.
+        Here is an example of combining two random generators using "OR" rule (the first signal wins):
 
         ```python-repl
         >>> from numba import njit
         >>> from collections import namedtuple
+        >>> from vectorbt.indicators.configs import flex_elem_param_config
         >>> from vectorbt.signals.factory import SignalFactory
         >>> from vectorbt.signals.nb import rand_by_prob_choice_nb
-        >>> from vectorbt.signals.basic import flex_elem_param_config
 
         >>> # Enum to distinguish random generators
         >>> RandType = namedtuple('RandType', ['R1', 'R2'])(0, 1)
@@ -301,7 +326,7 @@ class SignalFactory(IndicatorFactory):
         ...     idxs1 = rand_by_prob_choice_nb(
         ...         from_i, to_i, col, prob1, True, temp_idx_arr1, flex_2d)
         ...     if len(idxs1) > 0:
-        ...         to_i = idxs1[0]  # no need to go beyond first signal
+        ...         to_i = idxs1[0]  # no need to go beyond first the first found signal
         ...     idxs2 = rand_by_prob_choice_nb(
         ...         from_i, to_i, col, prob2, True, temp_idx_arr2, flex_2d)
         ...     if len(idxs2) > 0:
@@ -331,7 +356,7 @@ class SignalFactory(IndicatorFactory):
         ...         prob1=flex_elem_param_config,  # param per frame/row/col/element
         ...         prob2=flex_elem_param_config
         ...     ),
-        ...     forward_flex_2d=True,
+        ...     pass_flex_2d=True,
         ...     rand_type=-1  # fill with this value
         ... )
 
@@ -396,14 +421,14 @@ class SignalFactory(IndicatorFactory):
         if cache_settings is None:
             cache_settings = {}
 
-        def _check_settings(func_settings):
+        def _check_settings(func_settings: tp.Kwargs) -> None:
             for k in func_settings:
                 if k not in (
-                    'pass_inputs',
-                    'pass_in_outputs',
-                    'pass_params',
-                    'pass_kwargs',
-                    'pass_cache'
+                        'pass_inputs',
+                        'pass_in_outputs',
+                        'pass_params',
+                        'pass_kwargs',
+                        'pass_cache'
                 ):
                     raise ValueError(f"Can't find key {k} in function settings")
 
@@ -412,7 +437,7 @@ class SignalFactory(IndicatorFactory):
         _check_settings(cache_settings)
 
         # Get input names for each function
-        def _get_func_names(func_settings, setting, all_names):
+        def _get_func_names(func_settings: tp.Kwargs, setting: str, all_names: tp.Sequence[str]) -> tp.List[str]:
             func_input_names = func_settings.get(setting, None)
             if func_input_names is None:
                 return []
@@ -453,16 +478,20 @@ class SignalFactory(IndicatorFactory):
             if len(exit_param_names) > 0:
                 _1 += ", *exit_param_tuples[i]"
             _1 += ", *exit_args"
-            func_str = "def apply_func_nb({0}):\n   return generate_ex_nb({1})".format(_0, _1)
+            func_str = "def apply_func({0}):\n   return generate_ex_func({1})".format(_0, _1)
             scope = {
-                'generate_ex_nb': generate_ex_nb,
+                'generate_ex_func': generate_ex_func,
                 'exit_choice_func': exit_choice_func
             }
             filename = inspect.getfile(lambda: None)
             code = compile(func_str, filename, 'single')
             exec(code, scope)
-            apply_func_nb = scope['apply_func_nb']
-            apply_func_nb = njit(apply_func_nb)
+            apply_func = scope['apply_func']
+            if numba_loop:
+                apply_func = njit(apply_func)
+                apply_and_concat_func = combine_fns.apply_and_concat_one_nb
+            else:
+                apply_and_concat_func = combine_fns.apply_and_concat_one
 
         else:
             _0 = "i"
@@ -498,21 +527,37 @@ class SignalFactory(IndicatorFactory):
             if len(exit_param_names) > 0:
                 _1 += ", *exit_param_tuples[i]"
             _1 += ", *exit_args)"
-            func_str = "def apply_func_nb({0}):\n   return generate_enex_nb({1})".format(_0, _1)
+            func_str = "def apply_func({0}):\n   return generate_enex_func({1})".format(_0, _1)
             scope = {
-                'generate_enex_nb': generate_enex_nb,
+                'generate_enex_func': generate_enex_func,
                 'entry_choice_func': entry_choice_func,
                 'exit_choice_func': exit_choice_func
             }
             filename = inspect.getfile(lambda: None)
             code = compile(func_str, filename, 'single')
             exec(code, scope)
-            apply_func_nb = scope['apply_func_nb']
-            apply_func_nb = njit(apply_func_nb)
+            apply_func = scope['apply_func']
+            if numba_loop:
+                apply_func = njit(apply_func)
+                apply_and_concat_func = combine_fns.apply_and_concat_multiple_nb
+            else:
+                apply_and_concat_func = combine_fns.apply_and_concat_multiple
 
-        def custom_func(input_list, in_output_list, param_list, *args, input_shape=None, flex_2d=None,
-                        entry_args=None, exit_args=None, cache_args=None, entry_kwargs=None,
-                        exit_kwargs=None, cache_kwargs=None, return_cache=False, use_cache=None, **_kwargs):
+        def custom_func(input_list: tp.List[tp.AnyArray],
+                        in_output_list: tp.List[tp.List[tp.AnyArray]],
+                        param_list: tp.List[tp.List[tp.Param]],
+                        *args,
+                        input_shape: tp.Optional[tp.Shape] = None,
+                        flex_2d: tp.Optional[bool] = None,
+                        entry_args: tp.Optional[tp.Args] = None,
+                        exit_args: tp.Optional[tp.Args] = None,
+                        cache_args: tp.Optional[tp.Args] = None,
+                        entry_kwargs: tp.KwargsLike = None,
+                        exit_kwargs: tp.KwargsLike = None,
+                        cache_kwargs: tp.KwargsLike = None,
+                        return_cache: bool = False,
+                        use_cache: tp.Optional[CacheOutputT] = None,
+                        **_kwargs) -> tp.Union[CacheOutputT, tp.Array2d, tp.List[tp.Array2d]]:
             # Get arguments
             if len(input_list) == 0:
                 if input_shape is None:
@@ -597,7 +642,7 @@ class SignalFactory(IndicatorFactory):
             entry_param_tuples = list(zip(*entry_param_list))
             exit_param_tuples = list(zip(*exit_param_list))
 
-            def _build_more_args(func_settings, func_kwargs):
+            def _build_more_args(func_settings: tp.Kwargs, func_kwargs: tp.Kwargs) -> tp.Args:
                 pass_kwargs = func_settings.get('pass_kwargs', [])
                 more_args = ()
                 for key in pass_kwargs:
@@ -637,7 +682,7 @@ class SignalFactory(IndicatorFactory):
                 return cache
             if cache is None:
                 cache = ()
-            if not isinstance(cache, (tuple, list, List)):
+            if not isinstance(cache, tuple):
                 cache = (cache,)
 
             entry_cache = ()
@@ -650,17 +695,23 @@ class SignalFactory(IndicatorFactory):
             # Apply and concatenate
             if exit_only and not iteratively:
                 if len(exit_in_output_names) > 0:
-                    _exit_in_output_tuples = (to_typed_list(exit_in_output_tuples),)
+                    if numba_loop:
+                        _exit_in_output_tuples = (to_typed_list(exit_in_output_tuples),)
+                    else:
+                        _exit_in_output_tuples = (exit_in_output_tuples,)
                 else:
                     _exit_in_output_tuples = ()
                 if len(exit_param_names) > 0:
-                    _exit_param_tuples = (to_typed_list(exit_param_tuples),)
+                    if numba_loop:
+                        _exit_param_tuples = (to_typed_list(exit_param_tuples),)
+                    else:
+                        _exit_param_tuples = (exit_param_tuples,)
                 else:
                     _exit_param_tuples = ()
 
-                return combine_fns.apply_and_concat_one_nb(
+                return apply_and_concat_func(
                     n_params,
-                    apply_func_nb,
+                    apply_func,
                     input_list[0],
                     exit_wait,
                     exit_input_tuple,
@@ -671,25 +722,37 @@ class SignalFactory(IndicatorFactory):
 
             else:
                 if len(entry_in_output_names) > 0:
-                    _entry_in_output_tuples = (to_typed_list(entry_in_output_tuples),)
+                    if numba_loop:
+                        _entry_in_output_tuples = (to_typed_list(entry_in_output_tuples),)
+                    else:
+                        _entry_in_output_tuples = (entry_in_output_tuples,)
                 else:
                     _entry_in_output_tuples = ()
                 if len(entry_param_names) > 0:
-                    _entry_param_tuples = (to_typed_list(entry_param_tuples),)
+                    if numba_loop:
+                        _entry_param_tuples = (to_typed_list(entry_param_tuples),)
+                    else:
+                        _entry_param_tuples = (entry_param_tuples,)
                 else:
                     _entry_param_tuples = ()
                 if len(exit_in_output_names) > 0:
-                    _exit_in_output_tuples = (to_typed_list(exit_in_output_tuples),)
+                    if numba_loop:
+                        _exit_in_output_tuples = (to_typed_list(exit_in_output_tuples),)
+                    else:
+                        _exit_in_output_tuples = (exit_in_output_tuples,)
                 else:
                     _exit_in_output_tuples = ()
                 if len(exit_param_names) > 0:
-                    _exit_param_tuples = (to_typed_list(exit_param_tuples),)
+                    if numba_loop:
+                        _exit_param_tuples = (to_typed_list(exit_param_tuples),)
+                    else:
+                        _exit_param_tuples = (exit_param_tuples,)
                 else:
                     _exit_param_tuples = ()
 
-                return combine_fns.apply_and_concat_multiple_nb(
+                return apply_and_concat_func(
                     n_params,
-                    apply_func_nb,
+                    apply_func,
                     input_shape,
                     entry_wait,
                     exit_wait,
@@ -703,4 +766,4 @@ class SignalFactory(IndicatorFactory):
                     exit_args + exit_more_args + exit_cache
                 )
 
-        return self.from_custom_func(custom_func, pass_lists=True, **kwargs)
+        return self.from_custom_func(custom_func, as_lists=True, **kwargs)

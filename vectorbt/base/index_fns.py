@@ -1,14 +1,27 @@
-"""Functions for working with index/columns."""
+"""Functions for working with index/columns.
+
+Index functions perform operations on index objects, such as stacking, combining,
+and cleansing MultiIndex levels. "Index" in pandas context is referred to both index and columns."""
 
 import numpy as np
 import pandas as pd
 from numba import njit
-from collections.abc import Iterable
+from datetime import datetime, timedelta
 
+from vectorbt import _typing as tp
 from vectorbt.utils import checks
 
 
-def get_index(arg, axis):
+def to_any_index(index_like: tp.IndexLike) -> tp.Index:
+    """Convert any index-like object to an index.
+
+    Index objects are kept as-is."""
+    if not isinstance(index_like, pd.Index):
+        return pd.Index(index_like)
+    return index_like
+
+
+def get_index(arg: tp.SeriesFrame, axis: int) -> tp.Index:
     """Get index of `arg` by `axis`."""
     checks.assert_type(arg, (pd.Series, pd.DataFrame))
     checks.assert_in(axis, (0, 1))
@@ -24,58 +37,80 @@ def get_index(arg, axis):
             return arg.columns
 
 
-def index_from_values(values, name=None):
+def index_from_values(values: tp.ArrayLikeSequence, name: tp.Optional[str] = None) -> tp.Index:
     """Create a new `pd.Index` with `name` by parsing an iterable `values`.
 
     Each in `values` will correspond to an element in the new index."""
-    checks.assert_type(values, Iterable)
-
+    scalar_types = (int, float, complex, str, bool, datetime, timedelta, np.generic)
     value_names = []
-    for i, v in enumerate(values):
-        v = np.asarray(v)
-        if np.all(v == v.item(0)):
-            value_names.append(v.item(0))
+    for i in range(len(values)):
+        v = values[i]
+        if v is None or isinstance(v, scalar_types):
+            value_names.append(v)
+        elif isinstance(v, np.ndarray):
+            if (v == v.item(0)).all():
+                value_names.append(v.item(0))
+            else:
+                value_names.append('array_%d' % i)
         else:
-            value_names.append('mix_%d' % i)
+            value_names.append('%s_%d' % (str(type(v).__name__), i))
     return pd.Index(value_names, name=name)
 
 
-def repeat_index(index, n):
-    """Repeat each element in `index` `n` times."""
-    if not isinstance(index, pd.Index):
-        index = pd.Index(index)
-    if checks.is_default_index(index):  # ignore simple ranges without name
+def repeat_index(index: tp.IndexLike, n: int, ignore_default: tp.Optional[bool] = None) -> tp.Index:
+    """Repeat each element in `index` `n` times.
+
+    Set `ignore_default` to None to use the default."""
+    from vectorbt._settings import settings
+    broadcasting_cfg = settings['broadcasting']
+
+    if ignore_default is None:
+        ignore_default = broadcasting_cfg['ignore_default']
+
+    index = to_any_index(index)
+    if checks.is_default_index(index) and ignore_default:  # ignore simple ranges without name
         return pd.RangeIndex(start=0, stop=len(index) * n, step=1)
-    return np.repeat(index, n)
+    return index.repeat(n)
 
 
-def tile_index(index, n):
-    """Tile the whole `index` `n` times."""
-    if not isinstance(index, pd.Index):
-        index = pd.Index(index)
-    if checks.is_default_index(index):  # ignore simple ranges without name
+def tile_index(index: tp.IndexLike, n: int, ignore_default: tp.Optional[bool] = None) -> tp.Index:
+    """Tile the whole `index` `n` times.
+
+    Set `ignore_default` to None to use the default."""
+    from vectorbt._settings import settings
+    broadcasting_cfg = settings['broadcasting']
+
+    if ignore_default is None:
+        ignore_default = broadcasting_cfg['ignore_default']
+
+    index = to_any_index(index)
+    if checks.is_default_index(index) and ignore_default:  # ignore simple ranges without name
         return pd.RangeIndex(start=0, stop=len(index) * n, step=1)
     if isinstance(index, pd.MultiIndex):
         return pd.MultiIndex.from_tuples(np.tile(index, n), names=index.names)
     return pd.Index(np.tile(index, n), name=index.name)
 
 
-def stack_indexes(*indexes, drop_duplicates=None, keep=None, drop_redundant=None):
-    """Stack each index in `indexes` on top of each other, from top to bottom."""
-    from vectorbt import settings
+def stack_indexes(indexes: tp.Sequence[tp.IndexLike], drop_duplicates: tp.Optional[bool] = None,
+                  keep: tp.Optional[str] = None, drop_redundant: tp.Optional[bool] = None) -> tp.Index:
+    """Stack each index in `indexes` on top of each other, from top to bottom.
+
+    Set `drop_duplicates`, `keep`, or `drop_redundant` to None to use the default."""
+    from vectorbt._settings import settings
+    broadcasting_cfg = settings['broadcasting']
 
     if drop_duplicates is None:
-        drop_duplicates = settings.broadcasting['drop_duplicates']
+        drop_duplicates = broadcasting_cfg['drop_duplicates']
+    if keep is None:
+        keep = broadcasting_cfg['keep']
     if drop_redundant is None:
-        drop_redundant = settings.broadcasting['drop_redundant']
+        drop_redundant = broadcasting_cfg['drop_redundant']
 
     levels = []
     for i in range(len(indexes)):
         index = indexes[i]
         if not isinstance(index, pd.MultiIndex):
-            if not isinstance(index, pd.Index):
-                index = pd.Index(index)
-            levels.append(index)
+            levels.append(to_any_index(index))
         else:
             for j in range(index.nlevels):
                 levels.append(index.get_level_values(j))
@@ -88,42 +123,28 @@ def stack_indexes(*indexes, drop_duplicates=None, keep=None, drop_redundant=None
     return new_index
 
 
-def combine_indexes(*indexes, **kwargs):
+def combine_indexes(indexes: tp.Sequence[tp.IndexLike],
+                    ignore_default: tp.Optional[bool] = None, **kwargs) -> tp.Index:
     """Combine each index in `indexes` using Cartesian product.
 
     Keyword arguments will be passed to `stack_indexes`."""
-    new_index = indexes[0]
+    new_index = to_any_index(indexes[0])
     for i in range(1, len(indexes)):
-        index1, index2 = new_index, indexes[i]
-        if not isinstance(index1, pd.Index):
-            index1 = pd.Index(index1)
-        if not isinstance(index2, pd.Index):
-            index2 = pd.Index(index2)
-
-        tuples1 = np.repeat(index1.to_numpy(), len(index2))
-        tuples2 = np.tile(index2.to_numpy(), len(index1))
-
-        if isinstance(index1, pd.MultiIndex):
-            index1 = pd.MultiIndex.from_tuples(tuples1, names=index1.names)
-        else:
-            index1 = pd.Index(tuples1, name=index1.name)
-        if isinstance(index2, pd.MultiIndex):
-            index2 = pd.MultiIndex.from_tuples(tuples2, names=index2.names)
-        else:
-            index2 = pd.Index(tuples2, name=index2.name)
-
-        new_index = stack_indexes(index1, index2, **kwargs)
+        index1, index2 = new_index, to_any_index(indexes[i])
+        new_index1 = repeat_index(index1, len(index2), ignore_default=ignore_default)
+        new_index2 = tile_index(index2, len(index1), ignore_default=ignore_default)
+        new_index = stack_indexes([new_index1, new_index2], **kwargs)
     return new_index
 
 
-def drop_levels(index, levels):
+def drop_levels(index: tp.Index, levels: tp.MaybeLevelSequence) -> tp.Index:
     """Softly drop `levels` in `index` by their name/position."""
     if not isinstance(index, pd.MultiIndex):
         return index
 
     levels_to_drop = []
-    if not isinstance(levels, (tuple, list)):
-        levels = [levels]
+    if isinstance(levels, (int, str)):
+        levels = (levels,)
     for level in levels:
         if level in index.names:
             if level not in levels_to_drop:
@@ -138,7 +159,7 @@ def drop_levels(index, levels):
     return index
 
 
-def rename_levels(index, name_dict):
+def rename_levels(index: tp.Index, name_dict: tp.Dict[str, tp.Any]) -> tp.Index:
     """Rename levels in `index` by `name_dict`."""
     for k, v in name_dict.items():
         if isinstance(index, pd.MultiIndex):
@@ -150,17 +171,17 @@ def rename_levels(index, name_dict):
     return index
 
 
-def select_levels(index, level_names):
+def select_levels(index: tp.Index, level_names: tp.MaybeLevelSequence) -> tp.Index:
     """Build a new index by selecting one or multiple `level_names` from `index`."""
     checks.assert_type(index, pd.MultiIndex)
 
-    if isinstance(level_names, (list, tuple)):
-        levels = [index.get_level_values(level_name) for level_name in level_names]
-        return pd.MultiIndex.from_arrays(levels)
-    return index.get_level_values(level_names)
+    if isinstance(level_names, (int, str)):
+        return index.get_level_values(level_names)
+    levels = [index.get_level_values(level_name) for level_name in level_names]
+    return pd.MultiIndex.from_arrays(levels)
 
 
-def drop_redundant_levels(index):
+def drop_redundant_levels(index: tp.Index) -> tp.Index:
     """Drop levels in `index` that either have a single unnamed value or a range from 0 to n."""
     if not isinstance(index, pd.MultiIndex):
         return index
@@ -177,23 +198,27 @@ def drop_redundant_levels(index):
     return index
 
 
-def drop_duplicate_levels(index, keep=None):
+def drop_duplicate_levels(index: tp.Index, keep: tp.Optional[str] = None) -> tp.Index:
     """Drop levels in `index` with the same name and values.
 
-    Set `keep` to 'last' to keep last levels, otherwise 'first'."""
-    from vectorbt import settings
+    Set `keep` to 'last' to keep last levels, otherwise 'first'.
+
+    Set `keep` to None to use the default."""
+    from vectorbt._settings import settings
+    broadcasting_cfg = settings['broadcasting']
 
     if keep is None:
-        keep = settings.broadcasting['keep']
+        keep = broadcasting_cfg['keep']
     if not isinstance(index, pd.MultiIndex):
         return index
+    checks.assert_in(keep.lower(), ['first', 'last'])
 
     levels = []
     levels_to_drop = []
     if keep == 'first':
         r = range(0, index.nlevels)
-    elif keep == 'last':
-        r = range(index.nlevels-1, -1, -1)  # loop backwards
+    else:
+        r = range(index.nlevels - 1, -1, -1)  # loop backwards
     for i in r:
         level = (index.levels[i].name, tuple(index.get_level_values(i).to_numpy().tolist()))
         if level not in levels:
@@ -203,8 +228,8 @@ def drop_duplicate_levels(index, keep=None):
     return index.droplevel(levels_to_drop)
 
 
-@njit
-def _align_index_to_nb(a, b):
+@njit(cache=True)
+def _align_index_to_nb(a: tp.Array1d, b: tp.Array1d) -> tp.Array1d:
     """Return indices required to align `a` to `b`."""
     idxs = np.empty(b.shape[0], dtype=np.int_)
     g = 0
@@ -217,7 +242,7 @@ def _align_index_to_nb(a, b):
     return idxs
 
 
-def align_index_to(index1, index2):
+def align_index_to(index1: tp.Index, index2: tp.Index) -> pd.IndexSlice:
     """Align `index1` to have the same shape as `index2` if they have any levels in common.
 
     Returns index slice for the aligning."""
@@ -272,7 +297,7 @@ def align_index_to(index1, index2):
     return pd.IndexSlice[_align_index_to_nb(unique1, unique2)]
 
 
-def align_indexes(*indexes):
+def align_indexes(indexes: tp.Sequence[tp.Index]) -> tp.List[tp.Index]:
     """Align multiple indexes to each other."""
     max_len = max(map(len, indexes))
     indices = []
@@ -294,10 +319,19 @@ def align_indexes(*indexes):
     return indices
 
 
-def pick_levels(index, required_levels=[], optional_levels=[]):
+OptionalLevelSequence = tp.Optional[tp.Sequence[tp.Union[None, tp.Level]]]
+
+
+def pick_levels(index: tp.Index,
+                required_levels: OptionalLevelSequence = None,
+                optional_levels: OptionalLevelSequence = None) -> tp.Tuple[tp.List[int], tp.List[int]]:
     """Pick optional and required levels and return their indices.
 
     Raises an exception if index has less or more levels than expected."""
+    if required_levels is None:
+        required_levels = []
+    if optional_levels is None:
+        optional_levels = []
     checks.assert_type(index, pd.MultiIndex)
 
     n_opt_set = len(list(filter(lambda x: x is not None, optional_levels)))
@@ -313,29 +347,46 @@ def pick_levels(index, required_levels=[], optional_levels=[]):
     # Pick optional levels
     _optional_levels = []
     for level in optional_levels:
+        level_pos = None
         if level is not None:
             checks.assert_type(level, (int, str))
             if isinstance(level, str):
-                level = index.names.index(level)
-            if level < 0:
-                level = index.nlevels + level
-            levels_left.remove(level)
-        _optional_levels.append(level)
+                level_pos = index.names.index(level)
+            else:
+                level_pos = level
+            if level_pos < 0:
+                level_pos = index.nlevels + level_pos
+            levels_left.remove(level_pos)
+        _optional_levels.append(level_pos)
 
     # Pick required levels
     _required_levels = []
     for level in required_levels:
+        level_pos = None
         if level is not None:
             checks.assert_type(level, (int, str))
             if isinstance(level, str):
-                level = index.names.index(level)
-            if level < 0:
-                level = index.nlevels + level
-            levels_left.remove(level)
-        _required_levels.append(level)
+                level_pos = index.names.index(level)
+            else:
+                level_pos = level
+            if level_pos < 0:
+                level_pos = index.nlevels + level_pos
+            levels_left.remove(level_pos)
+        _required_levels.append(level_pos)
     for i, level in enumerate(_required_levels):
         if level is None:
             _required_levels[i] = levels_left.pop(0)
 
     return _required_levels, _optional_levels
 
+
+def find_first_occurrence(index_value: tp.Any, index: tp.Index) -> int:
+    """Return index of the first occurrence in `index`."""
+    loc = index.get_loc(index_value)
+    if isinstance(loc, slice):
+        return loc.start
+    elif isinstance(loc, list):
+        return loc[0]
+    elif isinstance(loc, np.ndarray):
+        return np.flatnonzero(loc)[0]
+    return loc

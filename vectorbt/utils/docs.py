@@ -1,34 +1,39 @@
 """Utilities for documentation."""
+import json
+import numpy as np
 
-import inspect
-import sys
-from types import FunctionType, MethodType
-
-from vectorbt.utils.decorators import custom_property
+from vectorbt import _typing as tp
 
 
-def is_from_module(obj, module):
-    """Return whether `obj` is from module `module`."""
-    mod = inspect.getmodule(inspect.unwrap(obj))
-    return mod is None or mod.__name__ == module.__name__
+def prepare_for_docs(obj: tp.Any, replace: tp.DictLike = None, path: str = None) -> tp.Any:
+    """Prepare object for use in documentation."""
+    if isinstance(obj, np.dtype) and hasattr(obj, "fields"):
+        return dict(zip(
+            dict(obj.fields).keys(),
+            list(map(lambda x: str(x[0]), dict(obj.fields).values()))
+        ))
+    if isinstance(obj, tuple) and hasattr(obj, "_asdict"):
+        return prepare_for_docs(obj._asdict(), replace, path)
+    if isinstance(obj, (tuple, list)):
+        return [prepare_for_docs(v, replace, path) for v in obj]
+    if isinstance(obj, dict):
+        if replace is None:
+            replace = {}
+        new_obj = dict()
+        for k, v in obj.items():
+            if path is None:
+                new_path = k
+            else:
+                new_path = path + '.' + k
+            if new_path in replace:
+                new_obj[k] = replace[new_path]
+            else:
+                new_obj[k] = prepare_for_docs(v, replace, new_path)
+        return new_obj
+    return obj
 
 
-def list_module_keys(module_name, whitelist=[], blacklist=[]):
-    """List the names of all public functions and classes defined in the module `module_name`.
-
-    Includes the names listed in `whitelist` and excludes the names listed in `blacklist`."""
-    module = sys.modules[module_name]
-    return [name for name, obj in inspect.getmembers(module)
-            if (not name.startswith("_") and is_from_module(obj, module)
-                and ((inspect.isroutine(obj) and callable(obj)) or inspect.isclass(obj))
-                and name not in blacklist) or name in whitelist]
-
-
-def fix_class_for_docs(cls):
-    """Make functions and properties that were defined in any superclass of `cls` visible 
-    in the documentation of `cls`."""
-    for func_name in dir(cls):
-        if not func_name.startswith("_"):
-            func = getattr(cls, func_name)
-            if isinstance(func, (FunctionType, MethodType, property, custom_property)):
-                setattr(cls, func_name, func)
+def to_doc(obj: tp.Any, replace: tp.DictLike = None, path: str = None, **kwargs) -> str:
+    """Convert object to a JSON string."""
+    kwargs = {**dict(indent=4, default=str), **kwargs}
+    return json.dumps(prepare_for_docs(obj, replace, path), **kwargs)

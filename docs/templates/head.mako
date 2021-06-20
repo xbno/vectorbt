@@ -12,8 +12,8 @@
         color: #e82;
     }
     .homelink img {
-        max-width: 128px;
-        max-height: 128px;
+        max-width: 100px;
+        max-height: 100px;
         margin: auto;
         margin-bottom: .3em;
     }
@@ -24,6 +24,6 @@
 <link rel="icon" type="image/png" sizes="32x32" href="https://raw.githubusercontent.com/polakowo/vectorbt/master/static/favicon/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="https://raw.githubusercontent.com/polakowo/vectorbt/master/static/favicon/favicon-16x16.png">
 <link rel="manifest" href="https://raw.githubusercontent.com/polakowo/vectorbt/master/static/favicon/site.webmanifest">
-<link rel="mask-icon" href="https://raw.githubusercontent.com/polakowo/vectorbt/master/static/favicon/safari-pinned-tab.svg" color="#5bbad5">
-<meta name="msapplication-TileColor" content="#da532c">
-<meta name="theme-color" content="#ffffff">
+<link rel="icon" href="https://raw.githubusercontent.com/polakowo/vectorbt/master/static/favicon/favicon.ico">
+<meta name="msapplication-TileColor" content="#282c34">
+<meta name="theme-color" content="#282c34">

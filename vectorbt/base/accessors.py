@@ -1,12 +1,67 @@
 """Custom pandas accessors.
 
+Methods can be accessed as follows:
+
+* `BaseSRAccessor` -> `pd.Series.vbt.*`
+* `BaseDFAccessor` -> `pd.DataFrame.vbt.*`
+
+For example:
+
+```python-repl
+>>> import pandas as pd
+>>> import vectorbt as vbt
+
+>>> # vectorbt.base.accessors.BaseAccessor.make_symmetric
+>>> pd.Series([1, 2, 3]).vbt.make_symmetric()
+     0    1    2
+0  1.0  2.0  3.0
+1  2.0  NaN  NaN
+2  3.0  NaN  NaN
+```
+
+It contains base methods for working with pandas objects. Most of these methods are adaptations
+of combine/reshape/index functions that can work with pandas objects. For example,
+`vectorbt.base.reshape_fns.broadcast` can take an arbitrary number of pandas objects, thus
+you can find its variations as accessor methods.
+
+```python-repl
+>>> sr = pd.Series([1])
+>>> df = pd.DataFrame([1, 2, 3])
+
+>>> vbt.base.reshape_fns.broadcast_to(sr, df)
+   0
+0  1
+1  1
+2  1
+>>> sr.vbt.broadcast_to(df)
+   0
+0  1
+1  1
+2  1
+```
+
+Additionally, `BaseAccessor` implements arithmetic (such as `+`), comparison (such as `>`) and
+logical operators (such as `&`) by doing 1) NumPy-like broadcasting and 2) the compuation with NumPy
+under the hood, which is mostly much faster than with pandas.
+
+```python-repl
+>>> df = pd.DataFrame(np.random.uniform(size=(1000, 1000)))
+
+>>> %timeit df * 2  # pandas
+296 ms ± 27.4 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+>>> %timeit df.vbt * 2  # vectorbt
+5.48 ms ± 1.12 ms per loop (mean ± std. dev. of 7 runs, 100 loops each)
+```
+
 !!! note
+    You should ensure that your `*.vbt` operand is on the left if the other operand is an array.
+
     Accessors do not utilize caching."""
 
 import numpy as np
 import pandas as pd
-from collections.abc import Iterable
 
+from vectorbt import _typing as tp
 from vectorbt.utils import checks
 from vectorbt.utils.decorators import class_or_instancemethod
 from vectorbt.utils.config import merge_dicts
@@ -19,10 +74,12 @@ from vectorbt.base.class_helpers import (
     unary_magic_methods
 )
 
+BaseAccessorT = tp.TypeVar("BaseAccessorT", bound="BaseAccessor")
+
 
 @add_binary_magic_methods(
     binary_magic_methods,
-    lambda self, other, np_func: self.combine_with(other, combine_func=np_func)
+    lambda self, other, np_func: self.combine(other, allow_multiple=False, combine_func=np_func)
 )
 @add_unary_magic_methods(
     unary_magic_methods,
@@ -39,33 +96,41 @@ class BaseAccessor:
 
     `**kwargs` will be passed to `vectorbt.base.array_wrapper.ArrayWrapper`."""
 
-    def __init__(self, obj, **kwargs):
+    def __init__(self, obj: tp.SeriesFrame, **kwargs) -> None:
         if not checks.is_pandas(obj):  # parent accessor
             obj = obj._obj
         self._obj = obj
         self._wrapper = ArrayWrapper.from_obj(obj, **kwargs)
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self: BaseAccessorT, *args, **kwargs) -> BaseAccessorT:
         """Allows passing arguments to the initializer."""
 
         return self.__class__(self._obj, *args, **kwargs)
 
+    @class_or_instancemethod
+    def is_series(self_or_cls) -> bool:
+        raise NotImplementedError
+
+    @class_or_instancemethod
+    def is_frame(self_or_cls) -> bool:
+        raise NotImplementedError
+
     @property
-    def wrapper(self):
-        """Array wrapper (read-only)."""
+    def wrapper(self) -> ArrayWrapper:
+        """Array wrapper."""
         return self._wrapper
 
     # ############# Creation ############# #
 
     @classmethod
-    def empty(cls, shape, fill_value=np.nan, **kwargs):
+    def empty(cls, shape: tp.Shape, fill_value: tp.Scalar = np.nan, **kwargs) -> tp.SeriesFrame:
         """Generate an empty Series/DataFrame of shape `shape` and fill with `fill_value`."""
         if not isinstance(shape, tuple) or (isinstance(shape, tuple) and len(shape) == 1):
             return pd.Series(np.full(shape, fill_value), **kwargs)
         return pd.DataFrame(np.full(shape, fill_value), **kwargs)
 
     @classmethod
-    def empty_like(cls, other, fill_value=np.nan, **kwargs):
+    def empty_like(cls, other: tp.SeriesFrame, fill_value: tp.Scalar = np.nan, **kwargs) -> tp.SeriesFrame:
         """Generate an empty Series/DataFrame like `other` and fill with `fill_value`."""
         if checks.is_series(other):
             return cls.empty(other.shape, fill_value=fill_value, index=other.index, name=other.name, **kwargs)
@@ -73,7 +138,8 @@ class BaseAccessor:
 
     # ############# Index and columns ############# #
 
-    def apply_on_index(self, apply_func, *args, axis=1, inplace=False, **kwargs):
+    def apply_on_index(self, apply_func: tp.Callable, *args, axis: int = 1,
+                       inplace: bool = False, **kwargs) -> tp.Optional[tp.SeriesFrame]:
         """Apply function `apply_func` on index of the pandas object.
 
         Set `axis` to 1 for columns and 0 for index.
@@ -99,85 +165,91 @@ class BaseAccessor:
                 obj.index = obj_index
             return obj
 
-    def stack_index(self, index, on_top=True, axis=1, inplace=False):
+    def stack_index(self, index: tp.Index, on_top: bool = True, axis: int = 1,
+                    inplace: bool = False, **kwargs) -> tp.Optional[tp.SeriesFrame]:
         """See `vectorbt.base.index_fns.stack_indexes`.
 
         Set `on_top` to False to stack at bottom.
 
         See `BaseAccessor.apply_on_index` for other keyword arguments."""
 
-        def apply_func(obj_index):
+        def apply_func(obj_index: tp.Index) -> tp.Index:
             if on_top:
-                return index_fns.stack_indexes(index, obj_index)
-            return index_fns.stack_indexes(obj_index, index)
+                return index_fns.stack_indexes([index, obj_index], **kwargs)
+            return index_fns.stack_indexes([obj_index, index], **kwargs)
 
         return self.apply_on_index(apply_func, axis=axis, inplace=inplace)
 
-    def drop_levels(self, levels, axis=1, inplace=False):
+    def drop_levels(self, levels: tp.MaybeLevelSequence, axis: int = 1,
+                    inplace: bool = False) -> tp.Optional[tp.SeriesFrame]:
         """See `vectorbt.base.index_fns.drop_levels`.
 
         See `BaseAccessor.apply_on_index` for other keyword arguments."""
 
-        def apply_func(obj_index):
+        def apply_func(obj_index: tp.Index) -> tp.Index:
             return index_fns.drop_levels(obj_index, levels)
 
         return self.apply_on_index(apply_func, axis=axis, inplace=inplace)
 
-    def rename_levels(self, name_dict, axis=1, inplace=False):
+    def rename_levels(self, name_dict: tp.Dict[str, tp.Any], axis: int = 1,
+                      inplace: bool = False) -> tp.Optional[tp.SeriesFrame]:
         """See `vectorbt.base.index_fns.rename_levels`.
 
         See `BaseAccessor.apply_on_index` for other keyword arguments."""
 
-        def apply_func(obj_index):
+        def apply_func(obj_index: tp.Index) -> tp.Index:
             return index_fns.rename_levels(obj_index, name_dict)
 
         return self.apply_on_index(apply_func, axis=axis, inplace=inplace)
 
-    def select_levels(self, level_names, axis=1, inplace=False):
+    def select_levels(self, level_names: tp.MaybeLevelSequence, axis: int = 1,
+                      inplace: bool = False) -> tp.Optional[tp.SeriesFrame]:
         """See `vectorbt.base.index_fns.select_levels`.
 
         See `BaseAccessor.apply_on_index` for other keyword arguments."""
 
-        def apply_func(obj_index):
+        def apply_func(obj_index: tp.Index) -> tp.Index:
             return index_fns.select_levels(obj_index, level_names)
 
         return self.apply_on_index(apply_func, axis=axis, inplace=inplace)
 
-    def drop_redundant_levels(self, axis=1, inplace=False):
+    def drop_redundant_levels(self, axis: int = 1, inplace: bool = False) -> tp.Optional[tp.SeriesFrame]:
         """See `vectorbt.base.index_fns.drop_redundant_levels`.
 
         See `BaseAccessor.apply_on_index` for other keyword arguments."""
 
-        def apply_func(obj_index):
+        def apply_func(obj_index: tp.Index) -> tp.Index:
             return index_fns.drop_redundant_levels(obj_index)
 
         return self.apply_on_index(apply_func, axis=axis, inplace=inplace)
 
-    def drop_duplicate_levels(self, keep='last', axis=1, inplace=False):
+    def drop_duplicate_levels(self, keep: tp.Optional[str] = None, axis: int = 1,
+                              inplace: bool = False) -> tp.Optional[tp.SeriesFrame]:
         """See `vectorbt.base.index_fns.drop_duplicate_levels`.
 
         See `BaseAccessor.apply_on_index` for other keyword arguments."""
 
-        def apply_func(obj_index):
+        def apply_func(obj_index: tp.Index) -> tp.Index:
             return index_fns.drop_duplicate_levels(obj_index, keep=keep)
 
         return self.apply_on_index(apply_func, axis=axis, inplace=inplace)
 
     # ############# Reshaping ############# #
 
-    def to_1d_array(self):
+    def to_1d_array(self) -> tp.Array1d:
         """Convert to 1-dim NumPy array
 
         See `vectorbt.base.reshape_fns.to_1d`."""
         return reshape_fns.to_1d(self._obj, raw=True)
 
-    def to_2d_array(self):
+    def to_2d_array(self) -> tp.Array2d:
         """Convert to 2-dim NumPy array.
 
         See `vectorbt.base.reshape_fns.to_2d`."""
         return reshape_fns.to_2d(self._obj, raw=True)
 
-    def tile(self, n, keys=None, axis=1):
+    def tile(self, n: int, keys: tp.Optional[tp.IndexLike] = None, axis: int = 1,
+             wrap_kwargs: tp.KwargsLike = None) -> tp.SeriesFrame:
         """See `vectorbt.base.reshape_fns.tile`.
 
         Set `axis` to 1 for columns and 0 for index.
@@ -185,14 +257,17 @@ class BaseAccessor:
         tiled = reshape_fns.tile(self._obj, n, axis=axis)
         if keys is not None:
             if axis == 1:
-                new_columns = index_fns.combine_indexes(keys, self.wrapper.columns)
-                return tiled.vbt.wrapper.wrap(tiled.values, columns=new_columns)
+                new_columns = index_fns.combine_indexes([keys, self.wrapper.columns])
+                return tiled.vbt.wrapper.wrap(
+                    tiled.values, **merge_dicts(dict(columns=new_columns), wrap_kwargs))
             else:
-                new_index = index_fns.combine_indexes(keys, self.wrapper.index)
-                return tiled.vbt.wrapper.wrap(tiled.values, index=new_index)
+                new_index = index_fns.combine_indexes([keys, self.wrapper.index])
+                return tiled.vbt.wrapper.wrap(
+                    tiled.values, **merge_dicts(dict(index=new_index), wrap_kwargs))
         return tiled
 
-    def repeat(self, n, keys=None, axis=1):
+    def repeat(self, n: int, keys: tp.Optional[tp.IndexLike] = None, axis: int = 1,
+               wrap_kwargs: tp.KwargsLike = None) -> tp.SeriesFrame:
         """See `vectorbt.base.reshape_fns.repeat`.
 
         Set `axis` to 1 for columns and 0 for index.
@@ -200,14 +275,16 @@ class BaseAccessor:
         repeated = reshape_fns.repeat(self._obj, n, axis=axis)
         if keys is not None:
             if axis == 1:
-                new_columns = index_fns.combine_indexes(self.wrapper.columns, keys)
-                return repeated.vbt.wrapper.wrap(repeated.values, columns=new_columns)
+                new_columns = index_fns.combine_indexes([self.wrapper.columns, keys])
+                return repeated.vbt.wrapper.wrap(
+                    repeated.values, **merge_dicts(dict(columns=new_columns), wrap_kwargs))
             else:
-                new_index = index_fns.combine_indexes(self.wrapper.index, keys)
-                return repeated.vbt.wrapper.wrap(repeated.values, index=new_index)
+                new_index = index_fns.combine_indexes([self.wrapper.index, keys])
+                return repeated.vbt.wrapper.wrap(
+                    repeated.values, **merge_dicts(dict(index=new_index), wrap_kwargs))
         return repeated
 
-    def align_to(self, other):
+    def align_to(self, other: tp.SeriesFrame, wrap_kwargs: tp.KwargsLike = None) -> tp.SeriesFrame:
         """Align to `other` on their axes.
 
         ## Example
@@ -244,41 +321,51 @@ class BaseAccessor:
         aligned_index = index_fns.align_index_to(obj.index, other.index)
         aligned_columns = index_fns.align_index_to(obj.columns, other.columns)
         obj = obj.iloc[aligned_index, aligned_columns]
-        return self.wrapper.wrap(obj.values, index=other.index, columns=other.columns, group_by=False)
+        return self.wrapper.wrap(
+            obj.values, group_by=False,
+            **merge_dicts(dict(index=other.index, columns=other.columns), wrap_kwargs))
 
     @class_or_instancemethod
-    def broadcast(self_or_cls, *others, **kwargs):
+    def broadcast(self_or_cls, *others: tp.Union[tp.ArrayLike, "BaseAccessor"], **kwargs) -> reshape_fns.BCRT:
         """See `vectorbt.base.reshape_fns.broadcast`."""
         others = tuple(map(lambda x: x._obj if isinstance(x, BaseAccessor) else x, others))
         if isinstance(self_or_cls, type):
             return reshape_fns.broadcast(*others, **kwargs)
         return reshape_fns.broadcast(self_or_cls._obj, *others, **kwargs)
 
-    def broadcast_to(self, other, **kwargs):
+    def broadcast_to(self, other: tp.Union[tp.ArrayLike, "BaseAccessor"], **kwargs) -> reshape_fns.BCRT:
         """See `vectorbt.base.reshape_fns.broadcast_to`."""
         if isinstance(other, BaseAccessor):
             other = other._obj
         return reshape_fns.broadcast_to(self._obj, other, **kwargs)
 
-    def make_symmetric(self):  # pragma: no cover
+    def make_symmetric(self) -> tp.Frame:  # pragma: no cover
         """See `vectorbt.base.reshape_fns.make_symmetric`."""
         return reshape_fns.make_symmetric(self._obj)
 
-    def unstack_to_array(self, **kwargs):  # pragma: no cover
+    def unstack_to_array(self, **kwargs) -> tp.Array:  # pragma: no cover
         """See `vectorbt.base.reshape_fns.unstack_to_array`."""
         return reshape_fns.unstack_to_array(self._obj, **kwargs)
 
-    def unstack_to_df(self, **kwargs):  # pragma: no cover
+    def unstack_to_df(self, **kwargs) -> tp.Frame:  # pragma: no cover
         """See `vectorbt.base.reshape_fns.unstack_to_df`."""
         return reshape_fns.unstack_to_df(self._obj, **kwargs)
 
     # ############# Combining ############# #
 
-    def apply(self, *args, apply_func=None, to_2d=False, **kwargs):
+    def apply(self, *args, apply_func: tp.Optional[tp.Callable] = None, keep_pd: bool = False,
+              to_2d: bool = False, wrap_kwargs: tp.KwargsLike = None, **kwargs) -> tp.SeriesFrame:
         """Apply a function `apply_func`.
 
-        Arguments `*args` and `**kwargs` will be directly passed to `apply_func`.
-        If `to_2d` is True, 2-dimensional NumPy arrays will be passed, otherwise as is.
+        Args:
+            *args: Variable arguments passed to `apply_func`.
+            apply_func (callable): Apply function.
+
+                Can be Numba-compiled.
+            keep_pd (bool): Whether to keep inputs as pandas objects, otherwise convert to NumPy arrays.
+            to_2d (bool): Whether to reshape inputs to 2-dim arrays, otherwise keep as-is.
+            wrap_kwargs (dict): Keyword arguments passed to `vectorbt.base.array_wrapper.ArrayWrapper.wrap`.
+            **kwargs: Keyword arguments passed to `combine_func`.
 
         !!! note
             The resulted array must have the same shape as the original array.
@@ -301,18 +388,24 @@ class BaseAccessor:
         checks.assert_not_none(apply_func)
         # Optionally cast to 2d array
         if to_2d:
-            obj = reshape_fns.to_2d(self._obj, raw=True)
+            obj = reshape_fns.to_2d(self._obj, raw=not keep_pd)
         else:
-            obj = np.asarray(self._obj)
+            if not keep_pd:
+                obj = np.asarray(self._obj)
+            else:
+                obj = self._obj
         result = apply_func(obj, *args, **kwargs)
-        return self.wrapper.wrap(result, group_by=False)
+        return self.wrapper.wrap(result, group_by=False, **merge_dicts({}, wrap_kwargs))
 
     @class_or_instancemethod
-    def concat(self_or_cls, *others, keys=None, broadcast_kwargs={}):
+    def concat(self_or_cls, *others: tp.ArrayLike, broadcast_kwargs: tp.KwargsLike = None,
+               keys: tp.Optional[tp.IndexLike] = None) -> tp.Frame:
         """Concatenate with `others` along columns.
 
-        All arguments will be broadcast using `vectorbt.base.reshape_fns.broadcast`
-        with `broadcast_kwargs`. Use `keys` as the outermost level.
+        Args:
+            *others (array_like): List of objects to be concatenated with this array.
+            broadcast_kwargs (dict): Keyword arguments passed to `vectorbt.base.reshape_fns.broadcast`.
+            keys (index_like): Outermost column level.
 
         ## Example
 
@@ -334,6 +427,8 @@ class BaseAccessor:
             objs = others
         else:
             objs = (self_or_cls._obj,) + others
+        if broadcast_kwargs is None:
+            broadcast_kwargs = {}
         broadcasted = reshape_fns.broadcast(*objs, **broadcast_kwargs)
         broadcasted = tuple(map(reshape_fns.to_2d, broadcasted))
         out = pd.concat(broadcasted, axis=1, keys=keys)
@@ -341,13 +436,32 @@ class BaseAccessor:
             out.columns = pd.RangeIndex(start=0, stop=len(out.columns), step=1)
         return out
 
-    def apply_and_concat(self, ntimes, *args, apply_func=None, to_2d=False, keys=None, **kwargs):
+    def apply_and_concat(self, ntimes: int, *args, apply_func: tp.Optional[tp.Callable] = None,
+                         keep_pd: bool = False, to_2d: bool = False, numba_loop: bool = False,
+                         use_ray: bool = False, keys: tp.Optional[tp.IndexLike] = None,
+                         wrap_kwargs: tp.KwargsLike = None, **kwargs) -> tp.Frame:
         """Apply `apply_func` `ntimes` times and concatenate the results along columns.
         See `vectorbt.base.combine_fns.apply_and_concat_one`.
 
-        Arguments `*args` and `**kwargs` will be directly passed to `apply_func`.
-        If `to_2d` is True, 2-dimensional NumPy arrays will be passed, otherwise as is.
-        Use `keys` as the outermost level.
+        Args:
+            ntimes (int): Number of times to call `apply_func`.
+            *args: Variable arguments passed to `apply_func`.
+            apply_func (callable): Apply function.
+
+                Can be Numba-compiled.
+            keep_pd (bool): Whether to keep inputs as pandas objects, otherwise convert to NumPy arrays.
+            to_2d (bool): Whether to reshape inputs to 2-dim arrays, otherwise keep as-is.
+            numba_loop (bool): Whether to loop using Numba.
+
+                Set to True when iterating large number of times over small input,
+                but note that Numba doesn't support variable keyword arguments.
+            use_ray (bool): Whether to use Ray to execute `combine_func` in parallel.
+
+                Only works with `numba_loop` set to False and `concat` is set to True.
+                See `vectorbt.base.combine_fns.ray_apply` for related keyword arguments.
+            keys (index_like): Outermost column level.
+            wrap_kwargs (dict): Keyword arguments passed to `vectorbt.base.array_wrapper.ArrayWrapper.wrap`.
+            **kwargs: Keyword arguments passed to `combine_func`.
 
         !!! note
             The resulted arrays to be concatenated must have the same shape as broadcast input arrays.
@@ -366,83 +480,83 @@ class BaseAccessor:
         x  3  4   6   8   9  12
         y  5  6  10  12  15  18
         ```
+
+        Use Ray for small inputs and large processing times:
+
+        ```python-repl
+        >>> def apply_func(i, a):
+        ...     time.sleep(1)
+        ...     return a
+
+        >>> sr = pd.Series([1, 2, 3])
+
+        >>> %timeit sr.vbt.apply_and_concat(3, apply_func=apply_func)
+        3.01 s ± 2.15 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+
+        >>> %timeit sr.vbt.apply_and_concat(3, apply_func=apply_func, use_ray=True)
+        1.01 s ± 2.31 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+        ```
         """
         checks.assert_not_none(apply_func)
         # Optionally cast to 2d array
         if to_2d:
-            obj_arr = reshape_fns.to_2d(self._obj, raw=True)
+            obj = reshape_fns.to_2d(self._obj, raw=not keep_pd)
         else:
-            obj_arr = np.asarray(self._obj)
-        if checks.is_numba_func(apply_func):
-            result = combine_fns.apply_and_concat_one_nb(ntimes, apply_func, obj_arr, *args, **kwargs)
+            if not keep_pd:
+                obj = np.asarray(self._obj)
+            else:
+                obj = self._obj
+        if checks.is_numba_func(apply_func) and numba_loop:
+            if use_ray:
+                raise ValueError("Ray cannot be used within Numba")
+            result = combine_fns.apply_and_concat_one_nb(ntimes, apply_func, obj, *args, **kwargs)
         else:
-            result = combine_fns.apply_and_concat_one(ntimes, apply_func, obj_arr, *args, **kwargs)
+            if use_ray:
+                result = combine_fns.apply_and_concat_one_ray(ntimes, apply_func, obj, *args, **kwargs)
+            else:
+                result = combine_fns.apply_and_concat_one(ntimes, apply_func, obj, *args, **kwargs)
         # Build column hierarchy
         if keys is not None:
-            new_columns = index_fns.combine_indexes(keys, self.wrapper.columns)
+            new_columns = index_fns.combine_indexes([keys, self.wrapper.columns])
         else:
             top_columns = pd.Index(np.arange(ntimes), name='apply_idx')
-            new_columns = index_fns.combine_indexes(top_columns, self.wrapper.columns)
-        return self.wrapper.wrap(result, columns=new_columns, group_by=False)
+            new_columns = index_fns.combine_indexes([top_columns, self.wrapper.columns])
+        return self.wrapper.wrap(result, group_by=False, **merge_dicts(dict(columns=new_columns), wrap_kwargs))
 
-    def combine_with(self, other, *args, combine_func=None, to_2d=False, broadcast_kwargs={}, **kwargs):
-        """Combine both using `combine_func` into a Series/DataFrame of the same shape.
+    def combine(self, other: tp.MaybeTupleList[tp.Union[tp.ArrayLike, "BaseAccessor"]], *args,
+                allow_multiple: bool = True, combine_func: tp.Optional[tp.Callable] = None,
+                keep_pd: bool = False, to_2d: bool = False, concat: bool = False, numba_loop: bool = False,
+                use_ray: bool = False, broadcast: bool = True, broadcast_kwargs: tp.KwargsLike = None,
+                keys: tp.Optional[tp.IndexLike] = None, wrap_kwargs: tp.KwargsLike = None, **kwargs) -> tp.SeriesFrame:
+        """Combine with `other` using `combine_func`.
 
-        All arguments will be broadcast using `vectorbt.base.reshape_fns.broadcast`
-        with `broadcast_kwargs`.
+        Args:
+            other (array_like): Object to combine this array with.
+            *args: Variable arguments passed to `combine_func`.
+            allow_multiple (bool): Whether a tuple/list will be considered as multiple objects in `other`.
+            combine_func (callable): Function to combine two arrays.
 
-        Arguments `*args` and `**kwargs` will be directly passed to `combine_func`.
-        If `to_2d` is True, 2-dimensional NumPy arrays will be passed, otherwise as is.
+                Can be Numba-compiled.
+            keep_pd (bool): Whether to keep inputs as pandas objects, otherwise convert to NumPy arrays.
+            to_2d (bool): Whether to reshape inputs to 2-dim arrays, otherwise keep as-is.
+            concat (bool): Whether to concatenate the results along the column axis.
+                Otherwise, pairwise combine into a Series/DataFrame of the same shape.
 
-        !!! note
-            The resulted array must have the same shape as broadcast input arrays.
+                If True, see `vectorbt.base.combine_fns.combine_and_concat`.
+                If False, see `vectorbt.base.combine_fns.combine_multiple`.
+            numba_loop (bool): Whether to loop using Numba.
 
-        ## Example
+                Set to True when iterating large number of times over small input,
+                but note that Numba doesn't support variable keyword arguments.
+            use_ray (bool): Whether to use Ray to execute `combine_func` in parallel.
 
-        ```python-repl
-        >>> import vectorbt as vbt
-        >>> import pandas as pd
-
-        >>> sr = pd.Series([1, 2], index=['x', 'y'])
-        >>> df = pd.DataFrame([[3, 4], [5, 6]], index=['x', 'y'], columns=['a', 'b'])
-        >>> sr.vbt.combine_with(df, combine_func=lambda x, y: x + y)
-           a  b
-        x  4  5
-        y  7  8
-        ```
-        """
-        if isinstance(other, BaseAccessor):
-            other = other._obj
-        checks.assert_not_none(combine_func)
-        if checks.is_numba_func(combine_func):
-            # Numba requires writable arrays
-            broadcast_kwargs = merge_dicts(dict(require_kwargs=dict(requirements='W')), broadcast_kwargs)
-        new_obj, new_other = reshape_fns.broadcast(self._obj, other, **broadcast_kwargs)
-        # Optionally cast to 2d array
-        if to_2d:
-            new_obj_arr = reshape_fns.to_2d(new_obj, raw=True)
-            new_other_arr = reshape_fns.to_2d(new_other, raw=True)
-        else:
-            new_obj_arr = np.asarray(new_obj)
-            new_other_arr = np.asarray(new_other)
-        result = combine_func(new_obj_arr, new_other_arr, *args, **kwargs)
-        return new_obj.vbt.wrapper.wrap(result)
-
-    def combine_with_multiple(self, others, *args, combine_func=None, to_2d=False,
-                              concat=False, broadcast_kwargs={}, keys=None, **kwargs):
-        """Combine with `others` using `combine_func`.
-
-        All arguments will be broadcast using `vectorbt.base.reshape_fns.broadcast`
-        with `broadcast_kwargs`.
-
-        If `concat` is True, concatenate the results along columns,
-        see `vectorbt.base.combine_fns.combine_and_concat`.
-        Otherwise, pairwise combine into a Series/DataFrame of the same shape, 
-        see `vectorbt.base.combine_fns.combine_multiple`.
-
-        Arguments `*args` and `**kwargs` will be directly passed to `combine_func`. 
-        If `to_2d` is True, 2-dimensional NumPy arrays will be passed, otherwise as is.
-        Use `keys` as the outermost level.
+                Only works with `numba_loop` set to False and `concat` is set to True.
+                See `vectorbt.base.combine_fns.ray_apply` for related keyword arguments.
+            broadcast (bool): Whether to broadcast all inputs.
+            broadcast_kwargs (dict): Keyword arguments passed to `vectorbt.base.reshape_fns.broadcast`.
+            keys (index_like): Outermost column level.
+            wrap_kwargs (dict): Keyword arguments passed to `vectorbt.base.array_wrapper.ArrayWrapper.wrap`.
+            **kwargs: Keyword arguments passed to `combine_func`.
 
         !!! note
             If `combine_func` is Numba-compiled, will broadcast using `WRITEABLE` and `C_CONTIGUOUS`
@@ -460,58 +574,103 @@ class BaseAccessor:
         >>> sr = pd.Series([1, 2], index=['x', 'y'])
         >>> df = pd.DataFrame([[3, 4], [5, 6]], index=['x', 'y'], columns=['a', 'b'])
 
-        >>> sr.vbt.combine_with_multiple([df, df*2],
-        ...     combine_func=lambda x, y: x + y)
+        >>> sr.vbt.combine(df, combine_func=lambda x, y: x + y)
+           a  b
+        x  4  5
+        y  7  8
+
+        >>> sr.vbt.combine([df, df*2], combine_func=lambda x, y: x + y)
             a   b
         x  10  13
         y  17  20
 
-        >>> sr.vbt.combine_with_multiple([df, df*2],
-        ...     combine_func=lambda x, y: x + y, concat=True, keys=['c', 'd'])
+        >>> sr.vbt.combine([df, df*2], combine_func=lambda x, y: x + y, concat=True, keys=['c', 'd'])
               c       d
            a  b   a   b
         x  4  5   7   9
         y  7  8  12  14
         ```
+
+        Use Ray for small inputs and large processing times:
+
+        ```python-repl
+        >>> def combine_func(a, b):
+        ...     time.sleep(1)
+        ...     return a + b
+
+        >>> sr = pd.Series([1, 2, 3])
+
+        >>> %timeit sr.vbt.combine([1, 1, 1], combine_func=combine_func)
+        3.01 s ± 2.98 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+
+        >>> %timeit sr.vbt.combine([1, 1, 1], combine_func=combine_func, concat=True, use_ray=True)
+        1.02 s ± 2.32 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+        ```
         """
+        if not allow_multiple or not isinstance(other, (tuple, list)):
+            others = (other,)
+        else:
+            others = other
         others = tuple(map(lambda x: x._obj if isinstance(x, BaseAccessor) else x, others))
         checks.assert_not_none(combine_func)
-        checks.assert_type(others, Iterable)
         # Broadcast arguments
-        if checks.is_numba_func(combine_func):
-            # Numba requires writeable arrays
-            # Plus all of our arrays must be in the same order
-            broadcast_kwargs = merge_dicts(dict(require_kwargs=dict(requirements=['W', 'C'])), broadcast_kwargs)
-        new_obj, *new_others = reshape_fns.broadcast(self._obj, *others, **broadcast_kwargs)
+        if broadcast:
+            if broadcast_kwargs is None:
+                broadcast_kwargs = {}
+            if checks.is_numba_func(combine_func):
+                # Numba requires writeable arrays
+                # Plus all of our arrays must be in the same order
+                broadcast_kwargs = merge_dicts(dict(require_kwargs=dict(requirements=['W', 'C'])), broadcast_kwargs)
+            new_obj, *new_others = reshape_fns.broadcast(self._obj, *others, **broadcast_kwargs)
+        else:
+            new_obj, new_others = self._obj, others
+        if not checks.is_pandas(new_obj):
+            new_obj = ArrayWrapper.from_shape(new_obj.shape).wrap(new_obj)
         # Optionally cast to 2d array
         if to_2d:
-            bc_arrays = tuple(map(lambda x: reshape_fns.to_2d(x, raw=True), (new_obj, *new_others)))
+            inputs = tuple(map(lambda x: reshape_fns.to_2d(x, raw=not keep_pd), (new_obj, *new_others)))
         else:
-            bc_arrays = tuple(map(lambda x: np.asarray(x), (new_obj, *new_others)))
+            if not keep_pd:
+                inputs = tuple(map(lambda x: np.asarray(x), (new_obj, *new_others)))
+            else:
+                inputs = new_obj, *new_others
+        if len(inputs) == 2:
+            result = combine_func(inputs[0], inputs[1], *args, **kwargs)
+            return new_obj.vbt.wrapper.wrap(result, **merge_dicts({}, wrap_kwargs))
         if concat:
             # Concat the results horizontally
-            if checks.is_numba_func(combine_func):
-                for i in range(1, len(bc_arrays)):
-                    checks.assert_meta_equal(bc_arrays[i - 1], bc_arrays[i])
-                result = combine_fns.combine_and_concat_nb(bc_arrays[0], bc_arrays[1:], combine_func, *args, **kwargs)
+            if checks.is_numba_func(combine_func) and numba_loop:
+                if use_ray:
+                    raise ValueError("Ray cannot be used within Numba")
+                for i in range(1, len(inputs)):
+                    checks.assert_meta_equal(inputs[i - 1], inputs[i])
+                result = combine_fns.combine_and_concat_nb(
+                    inputs[0], inputs[1:], combine_func, *args, **kwargs)
             else:
-                result = combine_fns.combine_and_concat(bc_arrays[0], bc_arrays[1:], combine_func, *args, **kwargs)
+                if use_ray:
+                    result = combine_fns.combine_and_concat_ray(
+                        inputs[0], inputs[1:], combine_func, *args, **kwargs)
+                else:
+                    result = combine_fns.combine_and_concat(
+                        inputs[0], inputs[1:], combine_func, *args, **kwargs)
             columns = new_obj.vbt.wrapper.columns
             if keys is not None:
-                new_columns = index_fns.combine_indexes(keys, columns)
+                new_columns = index_fns.combine_indexes([keys, columns])
             else:
                 top_columns = pd.Index(np.arange(len(new_others)), name='combine_idx')
-                new_columns = index_fns.combine_indexes(top_columns, columns)
-            return new_obj.vbt.wrapper.wrap(result, columns=new_columns)
+                new_columns = index_fns.combine_indexes([top_columns, columns])
+            return new_obj.vbt.wrapper.wrap(result, **merge_dicts(dict(columns=new_columns), wrap_kwargs))
         else:
             # Combine arguments pairwise into one object
-            if checks.is_numba_func(combine_func):
-                for i in range(1, len(bc_arrays)):
-                    checks.assert_dtype_equal(bc_arrays[i - 1], bc_arrays[i])
-                result = combine_fns.combine_multiple_nb(bc_arrays, combine_func, *args, **kwargs)
+            if use_ray:
+                raise ValueError("Ray cannot be used with concat=False")
+            if checks.is_numba_func(combine_func) and numba_loop:
+                for i in range(1, len(inputs)):
+                    checks.assert_dtype_equal(inputs[i - 1], inputs[i])
+                result = combine_fns.combine_multiple_nb(inputs, combine_func, *args, **kwargs)
             else:
-                result = combine_fns.combine_multiple(bc_arrays, combine_func, *args, **kwargs)
-            return new_obj.vbt.wrapper.wrap(result)
+                result = combine_fns.combine_multiple(inputs, combine_func, *args, **kwargs)
+            return new_obj.vbt.wrapper.wrap(result, **merge_dicts({}, wrap_kwargs))
 
 
 class BaseSRAccessor(BaseAccessor):
@@ -519,7 +678,7 @@ class BaseSRAccessor(BaseAccessor):
 
     Accessible through `pd.Series.vbt` and all child accessors."""
 
-    def __init__(self, obj, **kwargs):
+    def __init__(self, obj: tp.Series, **kwargs) -> None:
         if not checks.is_pandas(obj):  # parent accessor
             obj = obj._obj
         checks.assert_type(obj, pd.Series)
@@ -527,11 +686,11 @@ class BaseSRAccessor(BaseAccessor):
         BaseAccessor.__init__(self, obj, **kwargs)
 
     @class_or_instancemethod
-    def is_series(self_or_cls):
+    def is_series(self_or_cls) -> bool:
         return True
 
     @class_or_instancemethod
-    def is_frame(self_or_cls):
+    def is_frame(self_or_cls) -> bool:
         return False
 
 
@@ -540,7 +699,7 @@ class BaseDFAccessor(BaseAccessor):
 
     Accessible through `pd.DataFrame.vbt` and all child accessors."""
 
-    def __init__(self, obj, **kwargs):
+    def __init__(self, obj: tp.Frame, **kwargs) -> None:
         if not checks.is_pandas(obj):  # parent accessor
             obj = obj._obj
         checks.assert_type(obj, pd.DataFrame)
@@ -548,9 +707,9 @@ class BaseDFAccessor(BaseAccessor):
         BaseAccessor.__init__(self, obj, **kwargs)
 
     @class_or_instancemethod
-    def is_series(self_or_cls):
+    def is_series(self_or_cls) -> bool:
         return False
 
     @class_or_instancemethod
-    def is_frame(self_or_cls):
+    def is_frame(self_or_cls) -> bool:
         return True

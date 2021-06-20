@@ -2,5 +2,6 @@
 __pycache__
 .vscode
 .idea
-data
-ds_pipeline
+.mypy_cache
+.pytest_cache
+my_pipelines

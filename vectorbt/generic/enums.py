@@ -1,8 +1,11 @@
-"""Named tuples and enumerated types."""
+"""Named tuples and enumerated types.
+
+Defines enums and other schemas for `vectorbt.generic`."""
 
 import numpy as np
-from collections import namedtuple
-import json
+
+from vectorbt import _typing as tp
+from vectorbt.utils.docs import to_doc
 
 __all__ = [
     'DrawdownStatus',
@@ -11,20 +14,21 @@ __all__ = [
 
 __pdoc__ = {}
 
-# We use namedtuple for enums and classes to be able to use them in Numba
 
 # ############# Records ############# #
 
-DrawdownStatus = namedtuple('DrawdownStatus', [
-    'Active',
-    'Recovered'
-])(*range(2))
+class DrawdownStatusT(tp.NamedTuple):
+    Active: int
+    Recovered: int
+
+
+DrawdownStatus = DrawdownStatusT(*range(2))
 """_"""
 
 __pdoc__['DrawdownStatus'] = f"""Drawdown status.
 
-```plaintext
-{json.dumps(dict(zip(DrawdownStatus._fields, DrawdownStatus)), indent=2, default=str)}
+```json
+{to_doc(DrawdownStatus)}
 ```
 """
 
@@ -40,10 +44,7 @@ drawdown_dt = np.dtype([
 
 __pdoc__['drawdown_dt'] = f"""`np.dtype` of drawdown records.
 
-```plaintext
-{json.dumps(dict(zip(
-    dict(drawdown_dt.fields).keys(),
-    list(map(lambda x: str(x[0]), dict(drawdown_dt.fields).values()))
-)), indent=2, default=str)}
+```json
+{to_doc(drawdown_dt)}
 ```
 """

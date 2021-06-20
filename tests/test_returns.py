@@ -4,25 +4,24 @@ from datetime import datetime
 import pytest
 import empyrical
 
+import vectorbt as vbt
 from vectorbt import settings
-from vectorbt.generic.drawdowns import Drawdowns
 
 from tests.utils import isclose
 
 day_dt = np.timedelta64(86400000000000)
 
-index = pd.DatetimeIndex([
+ts = pd.DataFrame({
+    'a': [1, 2, 3, 4, 5],
+    'b': [5, 4, 3, 2, 1],
+    'c': [1, 2, 3, 2, 1]
+}, index=pd.DatetimeIndex([
     datetime(2018, 1, 1),
     datetime(2018, 1, 2),
     datetime(2018, 1, 3),
     datetime(2018, 1, 4),
     datetime(2018, 1, 5)
-])
-ts = pd.DataFrame({
-    'a': [1, 2, 3, 4, 5],
-    'b': [5, 4, 3, 2, 1],
-    'c': [1, 2, 3, 2, 1]
-}, index=index)
+]))
 ret = ts.pct_change()
 
 settings.returns['year_freq'] = '252 days'  # same as empyrical
@@ -140,14 +139,18 @@ class TestAccessors:
             pd.concat([res_a, res_b, res_c], axis=1)
         )
 
-    def test_total(self):
+    def test_total_return(self):
         res_a = empyrical.cum_returns_final(ret['a'])
         res_b = empyrical.cum_returns_final(ret['b'])
         res_c = empyrical.cum_returns_final(ret['c'])
         assert isclose(ret['a'].vbt.returns.total(), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.total(),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('total_return')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_total(ret.shape[0], minp=1).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     def test_annualized_return(self):
@@ -157,7 +160,11 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.annualized(), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.annualized(),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('annualized_return')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_annualized(ret.shape[0], minp=1).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     @pytest.mark.parametrize(
@@ -171,7 +178,11 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.annualized_volatility(levy_alpha=test_alpha), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.annualized_volatility(levy_alpha=test_alpha),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('annualized_volatility')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_annualized_volatility(ret.shape[0], minp=1, levy_alpha=test_alpha).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     def test_calmar_ratio(self):
@@ -181,7 +192,11 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.calmar_ratio(), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.calmar_ratio(),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('calmar_ratio')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_calmar_ratio(ret.shape[0], minp=1).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     @pytest.mark.parametrize(
@@ -202,7 +217,12 @@ class TestAccessors:
             risk_free=test_risk_free, required_return=test_required_return), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.omega_ratio(risk_free=test_risk_free, required_return=test_required_return),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('omega_ratio')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_omega_ratio(
+                ret.shape[0], minp=1, risk_free=test_risk_free, required_return=test_required_return).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     @pytest.mark.parametrize(
@@ -216,13 +236,21 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.sharpe_ratio(risk_free=test_risk_free), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.sharpe_ratio(risk_free=test_risk_free),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('sharpe_ratio')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_sharpe_ratio(ret.shape[0], minp=1, risk_free=test_risk_free).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     def test_deflated_sharpe_ratio(self):
         pd.testing.assert_series_equal(
-            ret.vbt.returns.deflated_sharpe_ratio(risk_free=[0.01, 0.02, 0.03]),
-            pd.Series([np.nan, np.nan, 0.0037486334476184353], index=ret.columns)
+            ret.vbt.returns.deflated_sharpe_ratio(risk_free=0.01),
+            pd.Series([np.nan, np.nan, 0.004879167151489748], index=ret.columns).rename('deflated_sharpe_ratio')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.deflated_sharpe_ratio(risk_free=0.03),
+            pd.Series([np.nan, np.nan, 0.0034902739533370438], index=ret.columns).rename('deflated_sharpe_ratio')
         )
 
     @pytest.mark.parametrize(
@@ -236,7 +264,12 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.downside_risk(required_return=test_required_return), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.downside_risk(required_return=test_required_return),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('downside_risk')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_downside_risk(
+                ret.shape[0], minp=1, required_return=test_required_return).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     @pytest.mark.parametrize(
@@ -250,7 +283,12 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.sortino_ratio(required_return=test_required_return), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.sortino_ratio(required_return=test_required_return),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('sortino_ratio')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_sortino_ratio(
+                ret.shape[0], minp=1, required_return=test_required_return).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     def test_information_ratio(self):
@@ -260,7 +298,12 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.information_ratio(benchmark_rets['a']), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.information_ratio(benchmark_rets),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('information_ratio')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_information_ratio(
+                ret.shape[0], benchmark_rets, minp=1).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     def test_beta(self):
@@ -270,7 +313,12 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.beta(benchmark_rets['a']), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.beta(benchmark_rets),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('beta')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_beta(
+                ret.shape[0], benchmark_rets, minp=1).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     @pytest.mark.parametrize(
@@ -284,7 +332,12 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.alpha(benchmark_rets['a'], risk_free=test_risk_free), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.alpha(benchmark_rets, risk_free=test_risk_free),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('alpha')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_alpha(
+                ret.shape[0], benchmark_rets, minp=1, risk_free=test_risk_free).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     def test_tail_ratio(self):
@@ -294,7 +347,12 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.tail_ratio(), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.tail_ratio(),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('tail_ratio')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_tail_ratio(
+                ret.shape[0], minp=1).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     @pytest.mark.parametrize(
@@ -302,29 +360,39 @@ class TestAccessors:
         [0.05, 0.06, 0.07],
     )
     def test_value_at_risk(self, test_cutoff):
-        # empyrical can't tolerate NaNs here
+        # empyrical can't tolerate NaN here
         res_a = empyrical.value_at_risk(ret['a'].iloc[1:], cutoff=test_cutoff)
         res_b = empyrical.value_at_risk(ret['b'].iloc[1:], cutoff=test_cutoff)
         res_c = empyrical.value_at_risk(ret['c'].iloc[1:], cutoff=test_cutoff)
         assert isclose(ret['a'].vbt.returns.value_at_risk(cutoff=test_cutoff), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.value_at_risk(cutoff=test_cutoff),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('value_at_risk')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_value_at_risk(
+                ret.shape[0], minp=1, cutoff=test_cutoff).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     @pytest.mark.parametrize(
         "test_cutoff",
         [0.05, 0.06, 0.07],
     )
-    def test_conditional_value_at_risk(self, test_cutoff):
-        # empyrical can't tolerate NaNs here
+    def test_cond_value_at_risk(self, test_cutoff):
+        # empyrical can't tolerate NaN here
         res_a = empyrical.conditional_value_at_risk(ret['a'].iloc[1:], cutoff=test_cutoff)
         res_b = empyrical.conditional_value_at_risk(ret['b'].iloc[1:], cutoff=test_cutoff)
         res_c = empyrical.conditional_value_at_risk(ret['c'].iloc[1:], cutoff=test_cutoff)
-        assert isclose(ret['a'].vbt.returns.conditional_value_at_risk(cutoff=test_cutoff), res_a)
+        assert isclose(ret['a'].vbt.returns.cond_value_at_risk(cutoff=test_cutoff), res_a)
         pd.testing.assert_series_equal(
-            ret.vbt.returns.conditional_value_at_risk(cutoff=test_cutoff),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            ret.vbt.returns.cond_value_at_risk(cutoff=test_cutoff),
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('cond_value_at_risk')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_cond_value_at_risk(
+                ret.shape[0], minp=1, cutoff=test_cutoff).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     def test_capture(self):
@@ -334,7 +402,12 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.capture(benchmark_rets['a']), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.capture(benchmark_rets),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('capture')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_capture(
+                ret.shape[0], benchmark_rets, minp=1).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     def test_up_capture(self):
@@ -344,7 +417,12 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.up_capture(benchmark_rets['a']), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.up_capture(benchmark_rets),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('up_capture')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_up_capture(
+                ret.shape[0], benchmark_rets, minp=1).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     def test_down_capture(self):
@@ -354,7 +432,12 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.down_capture(benchmark_rets['a']), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.down_capture(benchmark_rets),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('down_capture')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_down_capture(
+                ret.shape[0], benchmark_rets, minp=1).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     def test_drawdown(self):
@@ -394,11 +477,16 @@ class TestAccessors:
         assert isclose(ret['a'].vbt.returns.max_drawdown(), res_a)
         pd.testing.assert_series_equal(
             ret.vbt.returns.max_drawdown(),
-            pd.Series([res_a, res_b, res_c], index=ret.columns)
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename('max_drawdown')
+        )
+        pd.testing.assert_series_equal(
+            ret.vbt.returns.rolling_max_drawdown(
+                ret.shape[0], minp=1).iloc[-1],
+            pd.Series([res_a, res_b, res_c], index=ret.columns).rename(ret.index[-1])
         )
 
     def test_drawdowns(self):
-        assert type(ret['a'].vbt.returns.drawdowns) is Drawdowns
+        assert type(ret['a'].vbt.returns.drawdowns) is vbt.Drawdowns
         assert ret['a'].vbt.returns.drawdowns.wrapper.freq == ret['a'].vbt.wrapper.freq
         assert ret['a'].vbt.returns.drawdowns.wrapper.ndim == ret['a'].ndim
         assert ret.vbt.returns.drawdowns.wrapper.ndim == ret.ndim
@@ -461,9 +549,9 @@ class TestAccessors:
         pd.testing.assert_frame_equal(
             ret.vbt.returns.stats(
                 benchmark_rets,
-                levy_alpha=[1., 2., 3.],
-                risk_free=[0., 0.01, 0.02],
-                required_return=[0., 0.1, 0.2]
+                levy_alpha=2.,
+                risk_free=0.01,
+                required_return=0.1
             ),
             pd.DataFrame([[
                 pd.Timestamp('2018-01-01 00:00:00'),
@@ -472,8 +560,8 @@ class TestAccessors:
                 400.0,
                 451.8597134178033,
                 1.690784346944584e+37,
-                8465.370635713476,
-                24.612379624271007,
+                533.2682251925386,
+                24.139821935485003,
                 np.nan,
                 0.0,
                 np.inf,
@@ -483,7 +571,7 @@ class TestAccessors:
                 3.5238095238095237,
                 5.958001984471391e+35,
                 0.26249999999999996,
-                35691351.69391792,
+                21533588.23721922,
                 0.7853755858374825
             ], [
                 pd.Timestamp('2018-01-01 00:00:00'),
@@ -512,18 +600,18 @@ class TestAccessors:
                 0.0,
                 -143.81732886778948,
                 0.0,
-                446.63407039155584,
-                3.292658500361067,
+                1122.4972160321827,
+                3.517157943567505,
                 0.0,
                 -66.66666666666667,
-                1.7951447662614517,
-                -1.2025797235076259,
+                1.7974602203427394,
+                2.8598075085224215,
                 0.3666479606152471,
                 -3.438271604938274,
                 1.947368421052631,
                 1.947368421052631,
                 -0.47500000000000003,
-                -0.9999999997371561,
+                -0.9999999982512272,
                 0.30840682076341036
             ]], columns=[
                 'Start',

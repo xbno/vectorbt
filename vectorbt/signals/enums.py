@@ -1,7 +1,9 @@
-"""Named tuples and enumerated types."""
+"""Named tuples and enumerated types.
 
-from collections import namedtuple
-import json
+Defines enums and other schemas for `vectorbt.signals`."""
+
+from vectorbt import _typing as tp
+from vectorbt.utils.docs import to_doc
 
 __all__ = [
     'StopType'
@@ -9,18 +11,19 @@ __all__ = [
 
 __pdoc__ = {}
 
-# We use namedtuple for enums and classes to be able to use them in Numba
 
-StopType = namedtuple('StopType', [
-    'StopLoss',
-    'TrailStop',
-    'TakeProfit'
-])(*range(3))
+class StopTypeT(tp.NamedTuple):
+    StopLoss: int = 0
+    TrailStop: int = 1
+    TakeProfit: int = 2
+
+
+StopType = StopTypeT()
 """_"""
 
 __pdoc__['StopType'] = f"""Stop type.
 
-```plaintext
-{json.dumps(dict(zip(StopType._fields, StopType)), indent=2, default=str)}
+```json
+{to_doc(StopType)}
 ```
 """
